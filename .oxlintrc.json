@@ -1,0 +1,41 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "env": {
+    "node": true,
+    "es2024": true
+  },
+  "ignorePatterns": [
+    "test/fixtures/**"
+  ],
+  "rules": {
+    "no-unused-vars": [
+      "warn",
+      {
+        "ignoreRestSiblings": true,
+        "argsIgnorePattern": "^_",
+        "caughtErrors": "none"
+      }
+    ],
+    "unicorn/no-new-array": "off",
+    "no-undef": "error"
+  },
+  "overrides": [
+    {
+      "files": [
+        "test/**"
+      ],
+      "rules": {
+        "no-control-regex": "off"
+      }
+    },
+    {
+      "files": [
+        "src/web/**",
+        "scripts/verify-mobile-layout.cjs"
+      ],
+      "env": {
+        "browser": true
+      }
+    }
+  ]
+}

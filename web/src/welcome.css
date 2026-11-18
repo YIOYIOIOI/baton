@@ -1,0 +1,342 @@
+/*
+ * 首屏。版式（插画竖带 + 右栏）在 door.css，这里只管右栏里的东西。
+ *
+ * 排版只用两个字族：display 叙述，mono **承载产品自己的材料**（工具调用、路径、
+ * 测试输出）——不是「小标签用等宽」那种装饰性用法，那些内容本来就长这样。
+ *
+ * 颜色克制到底：高饱和色只有那颗球——插画里那颗、字标里那颗、会话里那颗在转的。
+ * 品牌蓝不铺在别处，它一出现就该有意义。
+ */
+
+/*
+ * 字阶上限 68 是量出来的：右栏封在 580，「换个地方接着做」七个汉字按
+ * -0.035em 字距算，68px 时约 460px 才排得下一行。
+ */
+/*
+ * 字距只收 -0.015em。拉丁大字要收紧到 -0.035em 才不散，但汉字每个字本来就占满
+ * 一个方格，照拉丁那样收，「同一件活，」几个字的笔画会碰到一起（实测）。
+ */
+.display {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: clamp(38px, 4.2vw, 64px);
+  line-height: 1.12;
+  letter-spacing: -0.015em;
+  font-weight: 700;
+  color: var(--tx-primary);
+  text-wrap: balance;
+}
+
+.lead {
+  margin: clamp(18px, 2.4vh, 26px) 0 0;
+  max-width: 30em;            /* 中文约 30 字/行，远在回扫阈值之内 */
+  font-size: clamp(16.5px, 1.25vw, 19px);
+  line-height: 1.72;
+  color: var(--tx-secondary);
+}
+
+.cta-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 14px 20px;
+  margin-top: clamp(26px, 3.6vh, 38px);
+}
+
+/*
+ * 主按钮。墨色药丸，右端坐着一颗球——点它就是把球传出去。
+ * 悬停时球跳一下，和字标里那颗是同一个动作；别处的按钮都不跳。
+ */
+.cta {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 52px;
+  padding: 0 20px 0 28px;
+  border-radius: 999px;
+  background: var(--bg-inverse);
+  color: var(--tx-inverse);
+  font-size: 16px;
+  font-weight: 600;
+  text-decoration: none;
+  transition: background-color var(--t-hover) var(--ease), transform var(--t-press) var(--ease);
+}
+
+.cta::after {
+  content: '';
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: var(--accent);
+  transform-origin: 50% 100%;
+}
+
+.cta:hover {
+  background: color-mix(in srgb, var(--bg-inverse) 88%, var(--bg-page));
+}
+
+.cta:hover::after {
+  animation: wm-hop 520ms var(--ease) both;
+}
+
+.cta:active {
+  transform: scale(0.97);
+}
+
+.note {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--tx-tertiary);
+}
+
+.hero-show {
+  margin-top: clamp(30px, 5vh, 52px);
+}
+
+/* ── 会话示意 ─────────────────────────────────────────────────────────────
+ *
+ * 一张浮在页面上的纸，长得和真的会话页一样（见 Session.tsx 抬头）。
+ * 不套设备外壳、不加浏览器 chrome：那些是这个品类的默认装饰，内容自己立得住。
+ */
+
+.session {
+  position: relative;
+  padding: 18px 20px 16px;
+  border-radius: var(--r-lg);
+  background: var(--bg-raised);
+  box-shadow: var(--lift-2);
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.session-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding-bottom: 12px;
+  margin-bottom: 14px;
+  border-bottom: 1px solid var(--bd-hairline);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+}
+
+.session-agent {
+  font-weight: 600;
+  color: var(--tx-primary);
+}
+
+.session-cwd {
+  color: var(--tx-tertiary);
+}
+
+.session-live {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-family: var(--font-sans);
+  color: var(--tx-secondary);
+}
+
+.session-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: session-breathe 1.6s ease-in-out infinite;
+}
+
+@keyframes session-breathe {
+  50% { transform: scale(0.7); opacity: 0.5; }
+}
+
+.session-body {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* 逐条流入。它要说明的正是「这东西是活的」，这件事描述不出来，只能演 */
+.session .turn {
+  animation: session-in 360ms var(--ease) both;
+}
+
+@keyframes session-in {
+  from {
+    opacity: 0;
+    transform: translateY(5px);
+  }
+}
+
+.session .turn + .turn {
+  margin-top: 5px;
+}
+
+.session .turn-user + .turn,
+.session .turn-assistant + .turn,
+.session .turn + .turn-user,
+.session .turn + .turn-assistant {
+  margin-top: 14px;
+}
+
+.session .turn-user {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+}
+
+/* 用户那句：墨色气泡，和会话页同一块 */
+.session .said {
+  max-width: 84%;
+  margin: 0;
+  padding: 8px 14px;
+  border-radius: 16px 16px 5px 16px;
+  background: var(--bubble);
+  color: var(--bubble-tx);
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+.session .assistant {
+  margin: 0;
+  font-family: var(--font-serif);
+  font-size: 15px;
+  line-height: 1.66;
+  color: var(--tx-primary);
+}
+
+/* 交接就发生在这里——整页唯一需要读者停一下的地方 */
+.session .from {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 5px;
+  margin-bottom: 5px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.toss {
+  flex: none;
+  overflow: visible;
+}
+
+.toss-path {
+  stroke: var(--accent);
+  stroke-width: 1.4;
+  stroke-linecap: round;
+  stroke-dasharray: 0.1 3.4;
+  animation: toss-wipe 460ms var(--ease) 80ms both;
+}
+
+.toss-ball {
+  fill: var(--accent);
+  transform-box: fill-box;
+  transform-origin: 50% 100%;
+  animation: toss-land 620ms var(--spring-bouncy) 460ms both;
+}
+
+@keyframes toss-wipe {
+  from { clip-path: inset(0 100% 0 0); }
+  to { clip-path: inset(0 0 0 0); }
+}
+
+@keyframes toss-land {
+  0% { transform: translate(-16px, -9px) scale(0.5); opacity: 0; }
+  40% { opacity: 1; }
+  100% { transform: none; opacity: 1; }
+}
+
+.session .tool {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  color: var(--tx-secondary);
+}
+
+/* 定宽让一列工具名对齐。这种对齐是读得出来的：眼睛能顺着一条隐形的竖线往下走 */
+.session .tool-name {
+  flex: 0 0 38px;
+  color: var(--tx-primary);
+  font-weight: 600;
+}
+
+.session .tool-arg {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session .tool-meta {
+  margin-left: auto;
+  color: var(--tx-tertiary);
+  white-space: nowrap;
+}
+
+.session .tool-meta.is-live {
+  font-family: var(--font-sans);
+  color: var(--accent);
+}
+
+/* 与 tool-arg 对齐：珠子 8 + 间距 9 + 工具名 38 + 间距 9 */
+.session .result {
+  margin: 1px 0 0;
+  padding-left: 64px;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  color: var(--tx-success);
+}
+
+/* 转的样式是 shared.css 的 .ball-live，和会话页状态栏那颗是同一套 */
+.session-foot {
+  display: flex;
+  margin-top: 12px;
+  color: var(--accent);
+}
+
+/*
+ * 够宽的时候，文字和会话示意左右并排：左边说「是什么、怎么进」，右边演「它真的在跑」。
+ * 竖着叠在笔记本的视口里放不下（实测 1440×730 时叠出来 880 高）。
+ *
+ * 右栏不再封 580：并排时整块要吃满右栏；文字那一列自己按 --measure 收住。
+ */
+@media (min-width: 1240px) and (min-aspect-ratio: 11 / 10) {
+  .door-welcome .door-body {
+    display: grid;
+    grid-template-columns: minmax(0, 0.95fr) minmax(0, 1fr);
+    align-items: center;
+    gap: clamp(36px, 4vw, 72px);
+    max-width: 1180px;
+  }
+
+  /* 内容最上面那个字标（door.css 的 .door-brand-inline）独占一整行，不占并排的两格 */
+  .door-welcome .door-brand-inline {
+    grid-column: 1 / -1;
+    justify-self: start;
+    margin-bottom: 0;
+  }
+
+  .door-welcome .display {
+    font-size: clamp(40px, 3.4vw, 60px);
+  }
+
+  .door-welcome .hero-show {
+    margin-top: 0;
+  }
+}
+
+/* 矮屏：示意收一档，别把「连接电脑」推出首屏 */
+@media (min-width: 1000px) and (max-height: 820px) {
+  .session {
+    padding: 14px 18px 12px;
+  }
+
+  .session .assistant {
+    font-size: 14px;
+  }
+}

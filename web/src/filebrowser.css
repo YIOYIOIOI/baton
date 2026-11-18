@@ -1,0 +1,651 @@
+/*
+  会话文件浏览器（FileBrowser.tsx）。外壳是 Modal（modal.css），这里只管里面。
+
+  类名一律 `fb-` 前缀：这个项目的 CSS 全是全局的、没有 CSS Modules，而我刚在
+  加号那儿栽过一次（`.pick` 撞上了新建页的目录选择框，按钮被撑成一条长条）。
+  加新类名之前先 grep。
+*/
+
+/* 固定高度：进出目录时卡片不跟着条目数伸缩，底部按钮不满屏乱跑 */
+.fb {
+  width: min(1080px, 100%);
+  height: min(82vh, 780px);
+}
+
+.fb .dlg-body {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.fb-root {
+  font-family: var(--font-mono);
+  font-weight: 600;
+  color: var(--tx-secondary);
+}
+
+/* ── 工具条：上一级 · 路径 · 筛选 · 刷新 ── */
+
+.fb-bar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--bd-hairline);
+}
+
+.fb-tool {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: var(--bg-sunken);
+  color: var(--tx-secondary);
+  font-family: inherit;
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background-color var(--t-hover) var(--ease), color var(--t-hover) var(--ease),
+    transform var(--t-press) var(--ease);
+}
+
+.fb-tool:hover:not(:disabled) {
+  background: var(--bg-press);
+  color: var(--tx-primary);
+}
+
+.fb-tool:active:not(:disabled) {
+  transform: scale(0.94);
+}
+
+.fb-tool:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* 路径一行，长了横着滚、不折行——折成两行就看不出层级了 */
+.fb-crumbs {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  overflow-x: auto;
+  scrollbar-width: none;
+  white-space: nowrap;
+  font-size: 13px;
+}
+
+.fb-crumbs::-webkit-scrollbar {
+  display: none;
+}
+
+.fb-crumb-wrap {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+}
+
+.fb-crumb {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 7px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--tx-secondary);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.fb-crumb:hover {
+  background: var(--bg-hover);
+  color: var(--tx-primary);
+}
+
+.fb-crumb.is-here {
+  color: var(--tx-primary);
+  font-weight: 700;
+}
+
+.fb-sep {
+  color: var(--tx-tertiary);
+}
+
+.fb-filter {
+  flex: none;
+  width: 180px;
+  padding: 6px 10px;
+  border: 1px solid var(--bd-strong);
+  border-radius: 8px;
+  background: var(--bg-raised);
+  color: var(--tx-primary);
+  font-family: inherit;
+  font-size: 12.5px;
+  caret-color: var(--accent);
+}
+
+.fb-filter:focus {
+  outline: none;
+  border-color: var(--tx-primary);
+}
+
+.fb-err {
+  flex: none;
+  margin: 0;
+  padding: 9px 16px;
+  background: color-mix(in srgb, var(--tx-danger) 7%, var(--bg-raised));
+  color: var(--tx-danger);
+  font-size: 13px;
+}
+
+/* ── 两栏：列表 · 预览 ── */
+
+.fb-panes {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.fb.has-preview .fb-panes {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr);
+}
+
+.fb-table {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+}
+
+/* 一行：勾选 | 图标 名称 | 修改时间 | 大小。表头和行用同一套列宽 */
+.fb-thead,
+.fb-open {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) 128px 74px;
+  align-items: center;
+  gap: 10px;
+}
+
+.fb-thead {
+  flex: none;
+  grid-template-columns: 40px minmax(0, 1fr) 128px 74px;
+  gap: 0;
+  padding: 0 14px 0 6px;
+  border-bottom: 1px solid var(--bd-hairline);
+  background: var(--bg-sunken);
+}
+
+.fb.has-preview .fb-thead {
+  grid-template-columns: 40px minmax(0, 1fr) 74px;
+}
+
+.fb.has-preview .fb-open {
+  grid-template-columns: 22px minmax(0, 1fr) 74px;
+}
+
+/* 预览开着时列表窄了，修改时间那一列让出来——预览头上有它 */
+.fb.has-preview .fb-time,
+.fb.has-preview .fb-th.is-time {
+  display: none;
+}
+
+.fb-th {
+  padding: 8px 0 8px 32px;
+  border: 0;
+  background: transparent;
+  color: var(--tx-tertiary);
+  font-family: inherit;
+  font-size: 11.5px;
+  font-weight: 700;
+  text-align: left;
+  cursor: pointer;
+}
+
+.fb-th.is-time,
+.fb-th.is-size {
+  padding-left: 10px;
+}
+
+.fb-th.is-size {
+  text-align: right;
+}
+
+.fb-th:hover {
+  color: var(--tx-primary);
+}
+
+.fb-tbody {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 4px 6px 8px;
+}
+
+.fb-empty {
+  margin: 0;
+  padding: 18px 14px;
+  color: var(--tx-tertiary);
+  font-size: 13px;
+}
+
+.fb-row {
+  display: flex;
+  align-items: center;
+  border-radius: 8px;
+  transition: background-color var(--t-hover) var(--ease);
+}
+
+.fb-row:hover {
+  background: var(--bg-hover);
+}
+
+.fb-row.is-picked {
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+}
+
+/* 正在预览的那一行：球色的影子，和别处「选中」同一个颜色 */
+.fb-row.is-on {
+  background: var(--accent-soft);
+}
+
+.fb-row.is-on .fb-name {
+  font-weight: 600;
+}
+
+/* 点开头的隐藏文件压低一档，和系统文件管理器一样 */
+.fb-row.is-hidden .fb-name {
+  color: var(--tx-tertiary);
+}
+
+/* 勾选框的命中区放大到整个左侧格子——方框本身只有 15px，指头点不准 */
+.fb-check {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 34px;
+  cursor: pointer;
+}
+
+/*
+ * 勾选框换了外观，还是原生 checkbox：键盘、读屏、表单行为一样都没丢。
+ * 勾上是一块球色的圆角方块加一道白勾——「选中」在这个界面里一律是那颗球的颜色。
+ */
+.fb-check input {
+  appearance: none;
+  flex: none;
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  border-radius: 4px;
+  box-shadow: inset 0 0 0 1.5px var(--bd-strong);
+  background: var(--bg-raised) center / 11px 11px no-repeat;
+  cursor: pointer;
+  transition: background-color var(--t-hover) var(--ease), box-shadow var(--t-hover) var(--ease),
+    transform var(--t-press) var(--ease);
+}
+
+.fb-check input:checked {
+  box-shadow: none;
+  background-color: var(--accent);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M2.4 6.3 4.9 8.7 9.6 3.6' fill='none' stroke='%23fff' stroke-width='1.9' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+}
+
+/* 表头的「部分选中」：一道横线 */
+.fb-check input:indeterminate {
+  box-shadow: none;
+  background-color: var(--accent);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M3 6h6' stroke='%23fff' stroke-width='1.9' stroke-linecap='round'/%3E%3C/svg%3E");
+}
+
+.fb-check input:active {
+  transform: scale(0.9);
+}
+
+.fb-check input:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+.fb-check input:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.fb-open {
+  flex: 1;
+  min-width: 0;
+  padding: 7px 8px 7px 0;
+  border: 0;
+  background: transparent;
+  color: var(--tx-primary);
+  font-family: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.fb-name {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.fb-time {
+  color: var(--tx-tertiary);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.fb-size {
+  color: var(--tx-tertiary);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
+}
+
+/* ── 图标：按类型，mask 画成 currentColor，颜色只给一点点区分 ── */
+
+.fb-ic {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  background: var(--tx-tertiary);
+  -webkit-mask: var(--fb-ic) center / contain no-repeat;
+  mask: var(--fb-ic) center / contain no-repeat;
+  --fb-ic: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M4 1.8h5.4l3 3v8.6c0 .5-.4.8-.8.8H4c-.5 0-.8-.4-.8-.8V2.6c0-.5.4-.8.8-.8z M9.2 2v3h3' fill='none' stroke='%23000' stroke-width='1.3' stroke-linejoin='round'/%3E%3C/svg%3E");
+}
+
+.fb-ic.is-dir,
+.fb-ic.is-root {
+  background: color-mix(in srgb, var(--accent) 70%, var(--tx-secondary));
+  --fb-ic: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M1.5 3.6c0-.6.4-1 1-1h3.4l1.6 1.7h6c.6 0 1 .4 1 1v6.9c0 .6-.4 1-1 1H2.5c-.6 0-1-.4-1-1V3.6z' fill='%23000'/%3E%3C/svg%3E");
+}
+
+.fb-ic.is-code {
+  background: color-mix(in srgb, var(--accent) 80%, var(--tx-primary));
+  --fb-ic: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M4 1.8h5.4l3 3v8.6c0 .5-.4.8-.8.8H4c-.5 0-.8-.4-.8-.8V2.6c0-.5.4-.8.8-.8z' fill='none' stroke='%23000' stroke-width='1.3' stroke-linejoin='round'/%3E%3Cpath d='M6.6 8 5.2 9.4l1.4 1.4M9.4 8l1.4 1.4-1.4 1.4' fill='none' stroke='%23000' stroke-width='1.2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+}
+
+.fb-ic.is-config {
+  background: var(--tx-warning);
+  --fb-ic: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M4 1.8h5.4l3 3v8.6c0 .5-.4.8-.8.8H4c-.5 0-.8-.4-.8-.8V2.6c0-.5.4-.8.8-.8z' fill='none' stroke='%23000' stroke-width='1.3' stroke-linejoin='round'/%3E%3Cpath d='M5.6 8h4.8M5.6 10.4h3.2' stroke='%23000' stroke-width='1.2' stroke-linecap='round'/%3E%3C/svg%3E");
+}
+
+.fb-ic.is-doc {
+  background: var(--tx-secondary);
+  --fb-ic: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M4 1.8h5.4l3 3v8.6c0 .5-.4.8-.8.8H4c-.5 0-.8-.4-.8-.8V2.6c0-.5.4-.8.8-.8z' fill='none' stroke='%23000' stroke-width='1.3' stroke-linejoin='round'/%3E%3Cpath d='M5.6 7.2h4.8M5.6 9.4h4.8M5.6 11.6h3' stroke='%23000' stroke-width='1.1' stroke-linecap='round'/%3E%3C/svg%3E");
+}
+
+.fb-ic.is-image {
+  background: var(--tx-success);
+  --fb-ic: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect x='2' y='2.6' width='12' height='10.8' rx='1.6' fill='none' stroke='%23000' stroke-width='1.3'/%3E%3Ccircle cx='5.8' cy='6.2' r='1.2' fill='%23000'/%3E%3Cpath d='m2.6 12 3.6-3.4 2.6 2.4 2-1.8 2.6 2.6' fill='none' stroke='%23000' stroke-width='1.2' stroke-linejoin='round'/%3E%3C/svg%3E");
+}
+
+.fb-ic.is-archive {
+  background: var(--tx-secondary);
+  --fb-ic: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect x='2.4' y='2' width='11.2' height='12' rx='1.4' fill='none' stroke='%23000' stroke-width='1.3'/%3E%3Cpath d='M8 2v2M8 5v1.4M8 7.4v1.4' stroke='%23000' stroke-width='1.3'/%3E%3Crect x='6.8' y='9.4' width='2.4' height='2.4' rx='.6' fill='none' stroke='%23000' stroke-width='1.1'/%3E%3C/svg%3E");
+}
+
+/* ── 预览 ── */
+
+.fb-preview {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  border-left: 1px solid var(--bd-hairline);
+  background: var(--bg-raised);
+  animation: fb-pv-in var(--t-layout) var(--spring-soft) both;
+}
+
+@keyframes fb-pv-in {
+  from { opacity: 0; transform: translateX(10px); }
+}
+
+.fb-pv-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 12px 8px 16px;
+}
+
+.fb-pv-head .fb-ic {
+  width: 20px;
+  height: 20px;
+}
+
+.fb-pv-title {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.fb-pv-name {
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: 13.5px;
+  font-weight: 700;
+  color: var(--tx-primary);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.fb-pv-meta {
+  font-size: 11.5px;
+  color: var(--tx-tertiary);
+}
+
+.fb-pv-acts {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 0 16px 10px;
+  border-bottom: 1px solid var(--bd-hairline);
+}
+
+.fb-act {
+  padding: 5px 11px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--bg-sunken);
+  color: var(--tx-primary);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color var(--t-hover) var(--ease), transform var(--t-press) var(--ease);
+}
+
+.fb-act:hover {
+  background: var(--bg-press);
+}
+
+.fb-act:active {
+  transform: scale(0.97);
+}
+
+.fb-act.is-primary {
+  background: var(--bg-inverse);
+  color: var(--tx-inverse);
+}
+
+.fb-act.is-primary:hover {
+  background: color-mix(in srgb, var(--bg-inverse) 86%, var(--bg-page));
+}
+
+/* 渲染 / 源码 小分段 */
+.fb-seg {
+  display: inline-flex;
+  margin-left: auto;
+  padding: 2px;
+  border-radius: 8px;
+  background: var(--bg-sunken);
+}
+
+.fb-seg button {
+  padding: 3px 9px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--tx-tertiary);
+  font-family: inherit;
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.fb-seg button.is-on {
+  background: var(--bg-raised);
+  box-shadow: var(--lift-1);
+  color: var(--tx-primary);
+}
+
+.fb-pv-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.fb-pv-note {
+  margin: 0;
+  padding: 18px 16px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--tx-tertiary);
+}
+
+.fb-pv-img {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100%;
+  padding: 16px;
+  /* 棋盘格底：透明图片看得出边界 */
+  background:
+    conic-gradient(var(--bg-sunken) 25%, transparent 0 50%, var(--bg-sunken) 0 75%, transparent 0) 0 0 / 16px 16px;
+}
+
+.fb-pv-img img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  border-radius: 6px;
+  box-shadow: var(--lift-1);
+}
+
+.fb-pv-md {
+  padding: 4px 18px 18px;
+  font-size: 14px;
+}
+
+/* 代码：行号一列、正文一列。行号单独一块，选中复制时不会把它带走 */
+.fb-code {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  min-height: 100%;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
+.fb-code pre {
+  margin: 0;
+  padding: 12px 0;
+  font: inherit;
+}
+
+.fb-code-nums {
+  padding-inline: 12px 10px !important;
+  border-right: 1px solid var(--bd-hairline);
+  background: var(--bg-sunken);
+  color: var(--tx-tertiary);
+  text-align: right;
+  user-select: none;
+}
+
+.fb-code-text {
+  padding-inline: 14px 16px !important;
+  color: var(--tx-primary);
+  white-space: pre;
+  overflow-x: auto;
+}
+
+/* 底部那行说明 */
+.fb-note {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--tx-tertiary);
+  font-size: 12.5px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* 窄屏：预览开着时只看预览，列表让出来（预览头上有关闭，回到列表） */
+@media (max-width: 760px) {
+  .fb.has-preview .fb-panes {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .fb.has-preview .fb-table {
+    display: none;
+  }
+
+  .fb-preview {
+    border-left: 0;
+  }
+
+  .fb-filter {
+    width: 110px;
+  }
+
+  .fb-thead {
+    grid-template-columns: 40px minmax(0, 1fr) 74px;
+  }
+
+  .fb-open {
+    grid-template-columns: 22px minmax(0, 1fr) 74px;
+  }
+
+  .fb-time,
+  .fb-th.is-time {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fb-preview {
+    animation: none;
+  }
+}
+
+/* agent 正文里指向本地文件的链接。和外链区分开：那个会跳走，这个是下载 */
+.md-file {
+  color: var(--tx-primary);
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  text-decoration-color: var(--tx-tertiary);
+  text-underline-offset: 3px;
+}
+
+.md-file:hover {
+  text-decoration-color: currentColor;
+}

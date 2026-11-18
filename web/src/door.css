@@ -1,0 +1,183 @@
+/*
+ * 门：首屏与配对页共用的版式。两页是同一道门的外面和里面，所以插画的位置、
+ * 大小、球的高度在两页之间**一个像素都不变**——从首屏点「连接电脑」进来，
+ * 变的只有右边那一栏，左边那两只手还在原地，只是球回到了下面那只手里。
+ *
+ * 几何沿用 docs/superpowers/specs/2026-09-14-baton-desktop-web-design.md §4
+ * 量出来的那套：球心 (0.5659, 0.5068)，下手贴左边、上手贴右边，
+ * 所以插画永远按全宽画，横向不裁——横着裁就切掉一只手的入口。
+ *
+ * 下面的常数都由那组比例推出来，写成数是因为 calc() 里连乘括号难读：
+ *   1.97025  画高 / 画宽 = 1391 / 706
+ *   0.99852  1.97025 × 0.5068，球心离画顶的距离 / 画宽
+ */
+
+/* ── 窄屏与竖窗（默认）：插画裁成顶上一条，只留两只手碰头的那一段 ─────────────
+ *
+ * 裁的是**中间**：手腕和手臂都出画，只剩指尖、球和那几道线——这是整幅画
+ * 最有信息量的一截。取画里 y 480–930 那 450 个单位撑满这条带（放大 3.0911 倍），
+ * 球心横竖都居中，所以窗口多窄都不会只剩半个球。
+ */
+.door {
+  --band: clamp(200px, 32dvh, 330px);
+  --gutter: 22px;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-height: 100dvh;
+  background: var(--bg-page);
+}
+
+.door-art {
+  position: relative;
+  height: var(--band);
+  overflow: hidden;
+}
+
+.door-art .handoff {
+  position: absolute;
+  height: calc(var(--band) * 3.0911);
+  width: calc(var(--band) * 1.56889);
+  top: calc(var(--band) * -1.06657);
+  left: calc(50% - var(--band) * 0.88783);
+}
+
+/*
+ * 字标在插画那条带的**上面**，单独一行。不压在带里：裁出来的那一截四个角
+ * 只有右下角是空的（左上是上手的拇指、左下是下手的指尖），压上去必然盖住一只手。
+ * DOM 里它排在插画后面（宽屏时要进右栏），窄屏靠 order 提到最前。
+ */
+.door-top {
+  order: -1;
+  display: flex;
+  align-items: center;
+  height: 64px;
+  flex: none;
+  padding-inline: var(--gutter);
+}
+
+.door-brand {
+  font-size: 24px;
+  text-decoration: none;
+}
+
+/* 内容最上面那个字标：窄屏有顶栏那个，它不出现；宽屏见下面 */
+.door-brand-inline {
+  display: none;
+  font-size: 27px;
+  text-decoration: none;
+}
+
+.door-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding: 26px var(--gutter) 44px;
+}
+
+.door-body {
+  width: 100%;
+  max-width: 580px;
+  margin-inline: auto;
+}
+
+/* ── 宽屏：插画是一整条竖带，贴左、上下左三边出血 ─────────────────────────
+ *
+ * 带宽取两个下限的大者再封顶：
+ *   30vw   屏幕越宽它也跟着宽，右边不会空出一大片死地
+ *   53dvh  按高度保底——画高 = 带宽 × 1.97，球又要落在视口正中，
+ *          带宽低于 0.515 × 视口高时，上下总有一头够不到边，露出一道断口
+ *   50vw   封顶，别把文字那一栏挤扁
+ * 封顶会生效的只有竖着的窗口，而那种窗口被 aspect-ratio 条件挡在了这段之外。
+ *
+ * 30vw 是实测收下来的：笔记本上浏览器去掉边框后视口常常只有 1440×730，
+ * 36vw 时右栏只剩 750 可用，首屏的文字和会话示意只能竖着叠，叠出来比视口高一截。
+ */
+@media (min-width: 1000px) and (min-aspect-ratio: 11 / 10) {
+  .door {
+    --art-w: min(50vw, max(30vw, 53dvh));
+    --gutter: clamp(40px, 6vw, 112px);
+    display: grid;
+    grid-template-columns: var(--art-w) minmax(0, 1fr);
+    grid-template-rows: 92px minmax(0, 1fr);
+  }
+
+  /*
+   * 竖直方向裁（画比视口高，不裁就撑出滚动条），水平方向不裁：上手的手臂
+   * 延长到了画框外（Handoff.tsx 的 UPPER 抬头），要让它从这一栏的右上角伸出去，
+   * 而不是在栏边被切出一道竖口。`clip` 不同于 `hidden`，可以只裁一个方向；
+   * 不支持的浏览器退回上面那行 hidden，只是那道断口还在。
+   *
+   * 2026-11-06 那只手臂压住了字标（下面 .door-top 那段）。中间试过把插画装进一块圆角面板、
+   * 四边都裁——owner：「哪有左边单独一个专门放插画的框？很割裂」。画就该铺在页面上，
+   * 让开的应该是字标。
+   */
+  .door-art {
+    grid-column: 1;
+    grid-row: 1 / -1;
+    position: sticky;
+    top: 0;
+    height: 100dvh;
+    overflow: hidden;
+    overflow: visible clip;
+  }
+
+  /* 球心钉在视口的垂直中线上 */
+  .door-art .handoff {
+    left: 0;
+    width: var(--art-w);
+    height: calc(var(--art-w) * 1.97025);
+    top: calc(50% - var(--art-w) * 0.99852);
+  }
+
+  /*
+   * 字标不放右栏顶上了：上手的手臂正是从那个角伸进右栏的，字标放在那儿，总有一种窗口比例
+   * 会被盖住（2560 宽实测盖住整个字标，1440 宽盖住「b」）。改成跟内容一起垂直居中，
+   * 排在内容最上面（.door-brand-inline）——那一截高度上，两只手都还在左栏里。
+   */
+  .door-top {
+    display: none;
+  }
+
+  .door-brand-inline {
+    display: inline-flex;
+    margin-bottom: clamp(28px, 5dvh, 56px);
+  }
+
+  .door-brand {
+    font-size: 27px;
+  }
+
+  /* safe：内容比视口高时别让顶上那截溢出到滚不回去的地方，退回顶端对齐 */
+  .door-main {
+    grid-column: 2;
+    grid-row: 1 / -1;
+    justify-content: center;
+    justify-content: safe center;
+    padding-block: 0 64px;
+  }
+
+  .door-body {
+    margin-inline: 0;
+  }
+}
+
+.door-lang {
+  position: fixed;
+  top: 16px;
+  right: 18px;
+  z-index: 10;
+  padding: 5px 11px;
+  border-radius: 999px;
+  border: 1px solid var(--bd-strong);
+  background: var(--bg-raised);
+  color: var(--tx-secondary);
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.door-lang:hover {
+  color: var(--tx-primary);
+  background: var(--bg-sunken);
+}

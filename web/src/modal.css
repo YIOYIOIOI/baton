@@ -1,0 +1,204 @@
+/*
+  居中浮窗（Modal.tsx）。遮罩、入场动作与会话文件浏览器（filebrowser.css 的 .fb-scrim /
+  .fb）是同一套：两种浮窗并存于同一个界面，长得不一样会像两个人做的。
+
+  类名一律 `dlg-` 前缀——这个项目的 CSS 全是全局的（`.md-` 已经被 Markdown 占了）。
+*/
+
+.dlg-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgb(14 14 18 / 32%);
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
+  animation: dlg-fade var(--t-enter) var(--ease) both;
+}
+
+@keyframes dlg-fade {
+  from { opacity: 0; }
+}
+
+.dlg {
+  display: flex;
+  flex-direction: column;
+  width: min(560px, 100%);
+  max-height: min(80vh, 720px);
+  border-radius: var(--r-lg);
+  background: var(--bg-raised);
+  box-shadow: var(--lift-3);
+  overflow: hidden;
+  animation: dlg-in var(--t-layout) var(--spring-soft) both;
+}
+
+/* 焦点落在卡片本身时不画框：那是「浮窗打开了」，不是用户 Tab 到了它 */
+.dlg:focus {
+  outline: none;
+}
+
+@keyframes dlg-in {
+  from { opacity: 0; transform: translateY(10px) scale(0.98); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dlg-scrim,
+  .dlg { animation: none; }
+}
+
+.dlg-head {
+  flex: none;
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 14px 12px 12px 20px;
+  border-bottom: 1px solid var(--bd-hairline);
+}
+
+.dlg-titles {
+  flex: 1;
+  min-width: 0;
+}
+
+.dlg-title {
+  margin: 0;
+  font-size: 15px;
+  line-height: 1.4;
+  font-weight: 700;
+  color: var(--tx-primary);
+}
+
+.dlg-hint {
+  margin: 2px 0 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--tx-tertiary);
+}
+
+.dlg-close {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--tx-secondary);
+  font-family: inherit;
+  font-size: 19px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background-color var(--t-hover) var(--ease), color var(--t-hover) var(--ease),
+    transform var(--t-press) var(--ease);
+}
+
+.dlg-close:hover {
+  background: var(--bg-press);
+  color: var(--tx-primary);
+}
+
+.dlg-close:active {
+  transform: scale(0.94);
+}
+
+/* 中间这块自己滚；头和脚钉住，关闭与确定永远够得着 */
+.dlg-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.dlg-foot {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px 10px 20px;
+  border-top: 1px solid var(--bd-hairline);
+  background: var(--bg-sunken);
+}
+
+/* 浮窗里的主按钮。和文件浏览器的「下载」（.fb-ok）同一个样子 */
+.dlg-ok {
+  flex: none;
+  min-width: 72px;
+  padding: 8px 18px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--bg-inverse);
+  color: var(--tx-inverse);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color var(--t-hover) var(--ease), transform var(--t-press) var(--ease);
+}
+
+.dlg-ok:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--bg-inverse) 86%, var(--bg-page));
+}
+
+.dlg-ok:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+.dlg-ok:disabled {
+  background: var(--bd-hairline);
+  color: var(--tx-tertiary);
+  cursor: default;
+}
+
+/* 次要按钮：取消、新建文件夹 */
+.dlg-btn {
+  flex: none;
+  padding: 7px 12px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--tx-secondary);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color var(--t-hover) var(--ease), color var(--t-hover) var(--ease);
+}
+
+.dlg-btn:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--tx-primary);
+}
+
+.dlg-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* 手机宽度：贴底的一张单子，比悬在中间的一小块好够 */
+@media (max-width: 560px) {
+  .dlg-scrim {
+    align-items: flex-end;
+    padding: 0;
+  }
+
+  .dlg {
+    width: 100%;
+    max-height: 88vh;
+    border-radius: var(--r-lg) var(--r-lg) 0 0;
+  }
+
+  .dlg-foot {
+    padding-bottom: max(10px, env(safe-area-inset-bottom));
+  }
+}
+
+@media (pointer: coarse) {
+  .dlg-close {
+    width: 44px;
+    height: 44px;
+  }
+}

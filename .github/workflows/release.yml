@@ -1,0 +1,41 @@
+# Tag-triggered OSS build & GitHub Release workflow.
+name: release
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm --prefix web ci
+      - run: npm --prefix app ci
+      - run: npm run check
+      - run: npm run oss:check
+      - run: npm run web:build
+      - run: npm run build:web
+      - run: npx --prefix app tsc --noEmit
+      - run: npm --prefix app test -- --watchAll=false
+      - run: npm pack
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Baton ${{ github.ref_name }}
+          body_path: .github/release-notes.md
+          files: baton-*.tgz
+          generate_release_notes: false

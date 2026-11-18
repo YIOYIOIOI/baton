@@ -1,0 +1,11 @@
+{
+  "command": "node",
+  "args": ["main.mjs"],
+  "restart_policy": "always",
+  "display_name": "Baton Bridge",
+  "description": "Authenticated local loopback bridge between Baton and Antigravity agentapi.",
+  "has_web_ui": false,
+  "agent_permissions": {
+    "allows_user_interactions": false
+  }
+}

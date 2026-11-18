@@ -1,0 +1,139 @@
+/*
+ * 交接插画。组件与来历见 Handoff.tsx。
+ *
+ * 单位说明：这里的 translate(…px) 作用在 SVG 元素上，**px 指的是 viewBox 里的
+ * 用户单位**（整幅画 706 宽），不是屏幕像素。所以同一组数在大图小图上
+ * 走的是同样比例的距离，不用按尺寸各写一套。
+ */
+
+.handoff {
+  display: block;
+  color: var(--tx-primary);
+  overflow: visible;
+}
+
+.handoff-hand,
+.handoff-rays {
+  fill: currentColor;
+}
+
+.handoff-ball {
+  fill: var(--accent);
+  transform-box: fill-box;
+  transform-origin: center;
+  transition: transform 560ms var(--spring-soft);
+}
+
+/* 跟着配对码往上走的那一格一格。弹簧让每多一个字符都是「往上抛了一下」 */
+.handoff-track {
+  transition: transform 620ms var(--spring-bouncy);
+}
+
+/* ── 入场：整页只有这一次编排好的动作 ──────────────────────────────────────
+ *
+ * 两只手从各自的画外伸进来，球随后弹出，最后是那几道短线。
+ * 顺序就是这幅画的读法：先看到两只手，再看到它们之间的东西。
+ *
+ * 关键帧只写 `from`：终点是元素自己的静态值。于是同一套入场，
+ * 球在手里（配对页刚打开）和球在半空（首屏）都对，不用写两份。
+ */
+.handoff .is-upper {
+  animation: handoff-upper 1150ms var(--spring-soft) both;
+}
+
+.handoff .is-lower {
+  animation: handoff-lower 1150ms var(--spring-soft) 70ms both;
+}
+
+.handoff-ball {
+  animation: handoff-pop 820ms var(--spring-bouncy) 420ms both;
+}
+
+@keyframes handoff-upper {
+  from { transform: translate(80px, -130px); }
+}
+
+@keyframes handoff-lower {
+  from { transform: translate(-80px, 130px); }
+}
+
+@keyframes handoff-pop {
+  from { transform: scale(0); }
+}
+
+/*
+ * 放射短线：**只在球悬空时出现**。
+ *
+ * 它们在设计稿里画的是「球刚被抛出来」的那股劲。球还握在手里的时候
+ * 画这几道线就是在撒谎——所以配对页上它们一直藏着，码抄完的那一下才弹出来。
+ */
+.handoff-rays {
+  transform-box: view-box;
+  transform-origin: 399.5px 705px;
+  opacity: 0;
+  transform: scale(0.72);
+  transition: opacity 200ms var(--ease), transform 640ms var(--spring-bouncy);
+  animation: handoff-rays 700ms var(--spring-bouncy) 900ms backwards;
+}
+
+.handoff.is-ready .handoff-rays {
+  opacity: 1;
+  transform: scale(1);
+}
+
+@keyframes handoff-rays {
+  from {
+    opacity: 0;
+    transform: scale(0.6);
+  }
+}
+
+/* 送出去：被上面那只手接住。球在手指后面，只从指缝里露出一截 */
+.handoff.is-toss .handoff-ball {
+  transform: translate(28px, -150px);
+}
+
+.handoff.is-toss .handoff-rays {
+  opacity: 0;
+}
+
+/* 没接住（码过期了、打错了）：从上面掉下来，弹回半空——码还在，可以再试一次 */
+.handoff.is-miss .handoff-ball {
+  animation: handoff-miss 1100ms var(--ease) both;
+}
+
+@keyframes handoff-miss {
+  0% { transform: translate(28px, -150px); animation-timing-function: cubic-bezier(0.5, 0, 0.9, 0.5); }
+  38% { transform: translate(-46px, 120px) scale(1.08, 0.9); animation-timing-function: cubic-bezier(0.2, 0.6, 0.4, 1); }
+  66% { transform: translate(-12px, -14px); animation-timing-function: cubic-bezier(0.5, 0, 0.7, 0.4); }
+  82% { transform: translate(-4px, 10px) scale(1.03, 0.97); }
+  100% { transform: translate(0, 0); }
+}
+
+/*
+ * 首屏：球悬在半空，极轻地浮着——它**正在**被交出去，不是一张静物照。
+ * 幅度 9 个用户单位（屏幕上约 5px），一个来回 4.2 秒：余光里觉得它是活的，
+ * 盯着看又不至于晃眼。等入场那一套放完才开始。
+ */
+.handoff.is-float .handoff-ball,
+.handoff.is-float .handoff-rays {
+  animation-name: handoff-pop, handoff-float;
+  animation-duration: 820ms, 4200ms;
+  animation-timing-function: var(--spring-bouncy), ease-in-out;
+  animation-delay: 420ms, 1700ms;
+  animation-iteration-count: 1, infinite;
+  animation-fill-mode: both, none;
+}
+
+/* 浮动等短线的入场放完（900 + 700ms）才接上，两段不重叠，接缝处不会跳一下 */
+.handoff.is-float .handoff-rays {
+  animation-name: handoff-rays, handoff-float;
+  animation-duration: 700ms, 4200ms;
+  animation-delay: 900ms, 1700ms;
+  animation-fill-mode: backwards, none;
+}
+
+@keyframes handoff-float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-9px); }
+}

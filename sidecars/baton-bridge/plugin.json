@@ -1,0 +1,5 @@
+{
+  "name": "baton-bridge",
+  "displayName": "Baton Bridge",
+  "description": "Local loopback bridge enabling Baton to continue and create Antigravity conversations via the official sidecar agentapi."
+}

@@ -1,0 +1,37 @@
+name: Bug Report
+description: Report a bug in Baton daemon, Web UI, Mobile App, or agent bridges
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened?
+      description: Clear description of the bug and expected vs actual behavior.
+    validations:
+      required: true
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - Daemon / Backend (`src/`)
+        - Desktop Web UI (`web/`)
+        - Mobile / PWA (`app/`)
+        - Antigravity Sidecar (`sidecars/`)
+        - CLI / Autostart (`baton doctor`, `scripts/`)
+    validations:
+      required: true
+  - type: input
+    id: env
+    attributes:
+      label: Environment (OS, Node version, Agent CLI)
+      placeholder: "e.g. macOS 15, Node v24.19.0, claude 2.x"
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Redacted `baton doctor --json` output & steps to reproduce
+      description: Please strip any local usernames, private domains, tokens, or IPs before posting.
+      render: text

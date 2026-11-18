@@ -1,0 +1,19 @@
+name: Feature Request
+description: Suggest an improvement or new capability for Baton
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or use case
+      description: What workflow are you trying to enable?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe the UX, CLI flags, or API behavior you have in mind.
+    validations:
+      required: true

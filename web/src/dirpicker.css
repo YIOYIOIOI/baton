@@ -1,0 +1,493 @@
+/*
+  选工作目录的浮窗（DirPicker.tsx）。外壳在 modal.css，这里只管里面。
+
+  左栏是入口（最近用过 / 位置），右栏是当前目录的内容。类名一律 `dp-` 前缀，
+  理由同 modal.css：全局 CSS，撞名就是互相改样式。
+*/
+
+.dp {
+  width: min(820px, 100%);
+  /* 固定高度而不是随内容伸缩：进出目录时卡片高度跟着条目数跳，底部按钮就满屏乱跑 */
+  height: min(80vh, 640px);
+}
+
+.dp-cols {
+  display: grid;
+  grid-template-columns: 250px minmax(0, 1fr);
+  height: 100%;
+  min-height: 0;
+}
+
+/* .dlg-body 默认自己滚；这里改成两栏各自滚，滚长长的「最近用过」时右边不跟着走 */
+.dp .dlg-body {
+  overflow: hidden;
+}
+
+/* ── 左栏 ── */
+
+.dp-side {
+  min-height: 0;
+  overflow-y: auto;
+  padding: 8px;
+  border-right: 1px solid var(--bd-hairline);
+  background: var(--bg-sunken);
+}
+
+.dp-sec + .dp-sec {
+  margin-top: 10px;
+}
+
+.dp-sec-title {
+  margin: 6px 8px 4px;
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--tx-tertiary);
+}
+
+.dp-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  width: 100%;
+  padding: 7px 8px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--tx-primary);
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color var(--t-hover) var(--ease);
+}
+
+.dp-item:hover:not(:disabled) {
+  background: var(--bg-hover);
+}
+
+.dp-item:active:not(:disabled) {
+  background: var(--bg-press);
+}
+
+.dp-item:disabled {
+  color: var(--tx-tertiary);
+  cursor: default;
+}
+
+/* 选中 = 球色的影子，和配置浮窗、文件浏览器里的「选中」同一个颜色 */
+.dp-item.is-on {
+  background: var(--accent-soft);
+}
+
+.dp-item.is-on .dp-item-name {
+  font-weight: 600;
+}
+
+/* 「位置」里那一项是「现在站在这儿」，不是选中：只给一道左边的竖条 */
+.dp-item.is-here {
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+/* 「算了，还用自动新建的那个」：它不是一个目录，是一个决定 */
+.dp-item.is-reset .dp-item-name {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.dp-item-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  flex: 1;
+}
+
+.dp-item-name {
+  overflow: hidden;
+  font-size: 13px;
+  line-height: 1.45;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* 名字下面那行「在哪」。等宽字体：一串目录名用比例字体时 › 前后的宽度会飘 */
+.dp-item-sub {
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--tx-tertiary);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  /* 长了先丢开头，保住离它最近的那几层 */
+  direction: rtl;
+  text-align: left;
+}
+
+/* rtl 只管从哪头截；字本身按 ltr 排，不然 `C:` 会被排成 `:C` */
+.dp-item-sub > span {
+  direction: ltr;
+  unicode-bidi: isolate;
+}
+
+/* 文件夹 / 盘 / 加号，mask 画成 currentColor，跟着行的文字颜色走 */
+.dp-ic {
+  flex: none;
+  width: 15px;
+  height: 15px;
+  margin-top: 2px;
+  background: var(--tx-secondary);
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 15 15'%3E%3Cpath d='M1.5 3.2c0-.5.4-.9.9-.9h3.3l1.5 1.6h5.4c.5 0 .9.4.9.9v6.9c0 .5-.4.9-.9.9H2.4c-.5 0-.9-.4-.9-.9V3.2z' fill='%23000'/%3E%3C/svg%3E") center / contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 15 15'%3E%3Cpath d='M1.5 3.2c0-.5.4-.9.9-.9h3.3l1.5 1.6h5.4c.5 0 .9.4.9.9v6.9c0 .5-.4.9-.9.9H2.4c-.5 0-.9-.4-.9-.9V3.2z' fill='%23000'/%3E%3C/svg%3E") center / contain no-repeat;
+}
+
+.dp-ic.is-drive {
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 15 15'%3E%3Crect x='1.6' y='4' width='11.8' height='7' rx='1.6' fill='none' stroke='%23000' stroke-width='1.3'/%3E%3Ccircle cx='10.8' cy='7.5' r='.9' fill='%23000'/%3E%3C/svg%3E");
+  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 15 15'%3E%3Crect x='1.6' y='4' width='11.8' height='7' rx='1.6' fill='none' stroke='%23000' stroke-width='1.3'/%3E%3Ccircle cx='10.8' cy='7.5' r='.9' fill='%23000'/%3E%3C/svg%3E");
+}
+
+.dp-ic.is-plus {
+  background: var(--accent);
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 15 15'%3E%3Cpath d='M7.5 2.5v10M2.5 7.5h10' stroke='%23000' stroke-width='1.6' stroke-linecap='round'/%3E%3C/svg%3E");
+  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 15 15'%3E%3Cpath d='M7.5 2.5v10M2.5 7.5h10' stroke='%23000' stroke-width='1.6' stroke-linecap='round'/%3E%3C/svg%3E");
+}
+
+/* ── 右栏 ── */
+
+.dp-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.dp-bar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px 6px;
+}
+
+.dp-up {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: var(--bg-sunken);
+  color: var(--tx-secondary);
+  font-family: inherit;
+  font-size: 15px;
+  cursor: pointer;
+  transition: background-color var(--t-hover) var(--ease), transform var(--t-press) var(--ease);
+}
+
+.dp-up:hover:not(:disabled) {
+  background: var(--bg-press);
+  color: var(--tx-primary);
+}
+
+.dp-up:active:not(:disabled) {
+  transform: scale(0.94);
+}
+
+.dp-up:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* 路径条：一行，长了横着滚（脚本会滚到最右，保住末尾），不折行——折成两行就看不出层级了 */
+.dp-crumbs {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  overflow-x: auto;
+  scrollbar-width: none;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+}
+
+.dp-crumbs::-webkit-scrollbar {
+  display: none;
+}
+
+.dp-crumb-wrap {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+}
+
+.dp-crumb {
+  flex: none;
+  padding: 4px 6px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--tx-secondary);
+  font: inherit;
+  cursor: pointer;
+  transition: background-color var(--t-hover) var(--ease), color var(--t-hover) var(--ease);
+}
+
+.dp-crumb:hover {
+  background: var(--bg-hover);
+  color: var(--tx-primary);
+}
+
+.dp-crumb.is-here {
+  color: var(--tx-primary);
+  font-weight: 700;
+}
+
+.dp-crumb-sep {
+  padding: 0 1px;
+  color: var(--tx-tertiary);
+}
+
+.dp-tools,
+.dp-new {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 12px 8px;
+}
+
+.dp-filter {
+  flex: 1;
+  min-width: 0;
+  padding: 7px 11px;
+  border: 1px solid var(--bd-strong);
+  border-radius: 9px;
+  background: var(--bg-raised);
+  color: var(--tx-primary);
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.4;
+  caret-color: var(--accent);
+}
+
+.dp-filter:focus {
+  outline: none;
+  border-color: var(--tx-primary);
+}
+
+.dp-mk {
+  white-space: nowrap;
+}
+
+.dp-err {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0 12px 6px;
+  padding: 9px 11px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--tx-danger) 7%, var(--bg-raised));
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--tx-danger);
+}
+
+.dp-err .dim {
+  color: var(--tx-secondary);
+}
+
+.dp-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  margin: 0;
+  padding: 0 8px 8px;
+  border-top: 1px solid var(--bd-hairline);
+  padding-top: 6px;
+  list-style: none;
+}
+
+.dp-hint {
+  padding: 12px 10px;
+  font-size: 13px;
+  color: var(--tx-tertiary);
+}
+
+/* 一行两个命中区：左边大块是「选中」，右边 › 是「进入」。各管各的，互不抢 */
+.dp-row {
+  display: flex;
+  align-items: stretch;
+  border-radius: 9px;
+  transition: background-color var(--t-hover) var(--ease);
+}
+
+.dp-row:hover {
+  background: var(--bg-hover);
+}
+
+.dp-row.is-on {
+  background: var(--accent-soft);
+}
+
+.dp-row.is-on .dp-item-name {
+  font-weight: 600;
+}
+
+.dp-pick {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  flex: 1;
+  min-width: 0;
+  padding: 7px 4px 7px 10px;
+  border: 0;
+  border-radius: 9px 0 0 9px;
+  background: transparent;
+  color: var(--tx-primary);
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.dp-pick:disabled,
+.dp-enter:disabled {
+  color: var(--tx-tertiary);
+  cursor: default;
+}
+
+.dp-pick:disabled .dp-ic {
+  background: var(--tx-tertiary);
+}
+
+.dp-tag {
+  flex: none;
+  align-self: center;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--bg-sunken);
+  color: var(--tx-tertiary);
+  font-size: 11px;
+  line-height: 17px;
+}
+
+.dp-tag.is-no {
+  background: transparent;
+}
+
+.dp-enter {
+  flex: none;
+  width: 36px;
+  border: 0;
+  border-radius: 0 9px 9px 0;
+  background: transparent;
+  color: var(--tx-tertiary);
+  font-family: inherit;
+  font-size: 17px;
+  cursor: pointer;
+  transition: background-color var(--t-hover) var(--ease), color var(--t-hover) var(--ease);
+}
+
+.dp-enter:hover:not(:disabled) {
+  background: var(--bg-press);
+  color: var(--tx-primary);
+}
+
+/* ── 底部：「将在 … 开始」 ── */
+
+.dp-target {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  color: var(--tx-secondary);
+}
+
+.dp-target-k {
+  flex: none;
+}
+
+.dp-target-none {
+  color: var(--tx-tertiary);
+}
+
+/* 选中的完整位置。长了丢开头、保末尾——末段是「哪个项目」 */
+.dp-path {
+  min-width: 0;
+  overflow: hidden;
+  padding: 2px 8px;
+  border-radius: var(--r-xs);
+  background: var(--bg-raised);
+  box-shadow: var(--lift-1);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--tx-secondary);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  direction: rtl;
+  text-align: left;
+}
+
+/* rtl 只管从哪头截；整串按 ltr 排。必须是一层包住全部，逐段隔离会把段序倒过来 */
+.dp-path-in {
+  direction: ltr;
+  unicode-bidi: isolate;
+}
+
+.dp-path .dp-crumb-sep {
+  padding: 0 4px;
+}
+
+.dp-path .is-last {
+  color: var(--tx-primary);
+  font-weight: 700;
+}
+
+/* ── 窄屏：左栏收成上面一条 ── */
+
+@media (max-width: 640px) {
+  .dp {
+    height: 88vh;
+  }
+
+  .dp-cols {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  .dp-side {
+    max-height: 30vh;
+    border-right: 0;
+    border-bottom: 1px solid var(--bd-hairline);
+  }
+
+  /* 底部：路径一行，按钮一行 */
+  .dp .dlg-foot {
+    flex-wrap: wrap;
+  }
+
+  .dp-target {
+    flex-basis: 100%;
+  }
+
+  /* 折到第二行的按钮靠右，主按钮仍在拇指够得着的那一侧 */
+  .dp .dlg-foot .dlg-btn {
+    margin-left: auto;
+  }
+}
+
+@media (pointer: coarse) {
+  .dp-item,
+  .dp-pick {
+    min-height: 44px;
+  }
+
+  .dp-enter {
+    width: 48px;
+  }
+}

@@ -1,0 +1,92 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 500" width="1200" height="500" role="img" aria-label="Baton System Architecture">
+  <defs>
+    <marker id="arrow-d" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#8C919D"/>
+    </marker>
+    <marker id="arrow-bd" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#6B8CFF"/>
+    </marker>
+  </defs>
+
+  <rect width="1200" height="500" rx="18" fill="#131418" stroke="rgba(255,255,255,0.11)"/>
+  <text x="36" y="42" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="13" font-weight="700" letter-spacing="1.2" fill="#8E93A0">SYSTEM ARCHITECTURE · LOCAL-FIRST BRIDGE</text>
+
+  <!-- Column 1: Clients -->
+  <g transform="translate(36, 74)">
+    <rect width="240" height="162" rx="14" fill="#1C1E24" stroke="rgba(255,255,255,0.12)"/>
+    <text x="20" y="34" font-family="Inter, sans-serif" font-size="11" font-weight="700" letter-spacing="0.9" fill="#6B8CFF">DESKTOP CLIENT</text>
+    <text x="20" y="60" font-family="Inter, sans-serif" font-size="18" font-weight="700" fill="#F2F3F5">Desktop Web UI</text>
+    <text x="20" y="84" font-family="Inter, sans-serif" font-size="13" fill="#A6AAB4">React 19 · Vite 8 (web/dist)</text>
+    <line x1="20" y1="102" x2="220" y2="102" stroke="rgba(255,255,255,0.08)"/>
+    <text x="20" y="124" font-family="'JetBrains Mono', Consolas, monospace" font-size="12" fill="#A6AAB4">HttpOnly Cookie · SSE</text>
+    <text x="20" y="144" font-family="'JetBrains Mono', Consolas, monospace" font-size="12" fill="#A6AAB4">Palette · Files · Export</text>
+
+    <rect y="190" width="240" height="162" rx="14" fill="#1C1E24" stroke="rgba(255,255,255,0.12)"/>
+    <text x="20" y="224" font-family="Inter, sans-serif" font-size="11" font-weight="700" letter-spacing="0.9" fill="#6B8CFF">MOBILE &amp; PWA</text>
+    <text x="20" y="250" font-family="Inter, sans-serif" font-size="18" font-weight="700" fill="#F2F3F5">Mobile / Expo UI</text>
+    <text x="20" y="274" font-family="Inter, sans-serif" font-size="13" fill="#A6AAB4">Expo Router (app/dist)</text>
+    <line x1="20" y1="292" x2="220" y2="292" stroke="rgba(255,255,255,0.08)"/>
+    <text x="20" y="314" font-family="'JetBrains Mono', Consolas, monospace" font-size="12" fill="#A6AAB4">Cookie / HMAC Bearer</text>
+    <text x="20" y="334" font-family="'JetBrains Mono', Consolas, monospace" font-size="12" fill="#A6AAB4">VAPID Push · QR Pairing</text>
+  </g>
+
+  <!-- Transport pill -->
+  <g transform="translate(308, 200)">
+    <line x1="-26" y1="-44" x2="6" y2="30" stroke="#6B8CFF" stroke-width="2" marker-end="url(#arrow-bd)" marker-start="url(#arrow-bd)"/>
+    <line x1="-26" y1="150" x2="6" y2="76" stroke="#6B8CFF" stroke-width="2" marker-end="url(#arrow-bd)" marker-start="url(#arrow-bd)"/>
+    <rect x="8" y="0" width="128" height="104" rx="12" fill="#1A2238" stroke="rgba(107,140,255,0.38)"/>
+    <text x="72" y="30" text-anchor="middle" font-family="Inter, sans-serif" font-size="12" font-weight="700" fill="#89A6FF">TRANSPORT</text>
+    <text x="72" y="52" text-anchor="middle" font-family="Inter, sans-serif" font-size="12.5" font-weight="600" fill="#F2F3F5">Cloudflare Tunnel</text>
+    <text x="72" y="71" text-anchor="middle" font-family="Inter, sans-serif" font-size="12.5" font-weight="600" fill="#F2F3F5">Tailscale · LAN</text>
+    <text x="72" y="90" text-anchor="middle" font-family="'JetBrains Mono', Consolas, monospace" font-size="11" fill="#A6AAB4">X-Baton: 1</text>
+    <line x1="142" y1="52" x2="176" y2="52" stroke="#6B8CFF" stroke-width="2" marker-end="url(#arrow-bd)" marker-start="url(#arrow-bd)"/>
+  </g>
+
+  <!-- Column 2: Baton Core Daemon -->
+  <g transform="translate(490, 74)">
+    <rect width="340" height="352" rx="16" fill="#23262F" stroke="rgba(255,255,255,0.14)"/>
+    <text x="24" y="36" font-family="'JetBrains Mono', Consolas, monospace" font-size="11" font-weight="700" letter-spacing="1.1" fill="#89A6FF">DAEMON · 127.0.0.1:3002</text>
+    <text x="24" y="64" font-family="Inter, sans-serif" font-size="22" font-weight="800" fill="#FFFFFF">Baton Node 24 Core</text>
+    <text x="24" y="86" font-family="Inter, sans-serif" font-size="13" fill="#B2B6C0">Zero runtime npm deps · Stdlib only</text>
+
+    <g transform="translate(22, 108)" font-family="Inter, sans-serif">
+      <rect width="296" height="50" rx="10" fill="#191B22" stroke="rgba(255,255,255,0.10)"/>
+      <text x="14" y="21" font-size="13" font-weight="700" fill="#F2F3F5">Auth, Devices &amp; Realpath Scope</text>
+      <text x="14" y="39" font-size="11.5" fill="#9FA4B0">256-bit HMAC · instant SSE revocation · roots</text>
+
+      <rect y="62" width="296" height="50" rx="10" fill="#191B22" stroke="rgba(255,255,255,0.10)"/>
+      <text x="14" y="83" font-size="13" font-weight="700" fill="#F2F3F5">Bounded Streaming &amp; Anchors</text>
+      <text x="14" y="101" font-size="11.5" fill="#9FA4B0">4 MiB chunk scan · Last-Event-ID · /full expand</text>
+
+      <rect y="124" width="296" height="50" rx="10" fill="#191B22" stroke="rgba(255,255,255,0.10)"/>
+      <text x="14" y="145" font-size="13" font-weight="700" fill="#F2F3F5">Turn Queue &amp; Approval Bridge</text>
+      <text x="14" y="163" font-size="11.5" fill="#9FA4B0">AskUserQuestion MCP · Goal auto-continue</text>
+
+      <rect y="186" width="296" height="42" rx="10" fill="#151C2F" stroke="rgba(107,140,255,0.40)"/>
+      <text x="14" y="211" font-family="'JetBrains Mono', Consolas, monospace" font-size="11.5" fill="#DCE4FF">~/.baton/ (token · devices · audit · revoked)</text>
+    </g>
+  </g>
+
+  <!-- Arrows Daemon -> Agents -->
+  <line x1="836" y1="150" x2="888" y2="122" stroke="#8C919D" stroke-width="2" marker-end="url(#arrow-d)" marker-start="url(#arrow-d)"/>
+  <line x1="836" y1="250" x2="888" y2="250" stroke="#8C919D" stroke-width="2" marker-end="url(#arrow-d)" marker-start="url(#arrow-d)"/>
+  <line x1="836" y1="350" x2="888" y2="376" stroke="#8C919D" stroke-width="2" marker-end="url(#arrow-d)" marker-start="url(#arrow-d)"/>
+
+  <!-- Column 3: Agent CLIs & Disk Transcripts -->
+  <g transform="translate(894, 74)">
+    <rect width="270" height="104" rx="14" fill="#1C1E24" stroke="rgba(255,255,255,0.12)"/>
+    <text x="18" y="30" font-family="Inter, sans-serif" font-size="16" font-weight="700" fill="#F2F3F5">Claude Code</text>
+    <text x="18" y="53" font-family="'JetBrains Mono', Consolas, monospace" font-size="11.5" fill="#89A6FF">stream-json + --mcp-config</text>
+    <text x="18" y="76" font-family="Inter, sans-serif" font-size="12" fill="#A6AAB4">Reads ~/.claude JSONL &amp; registry</text>
+
+    <rect y="124" width="270" height="104" rx="14" fill="#1C1E24" stroke="rgba(255,255,255,0.12)"/>
+    <text x="18" y="154" font-family="Inter, sans-serif" font-size="16" font-weight="700" fill="#F2F3F5">OpenAI Codex</text>
+    <text x="18" y="177" font-family="'JetBrains Mono', Consolas, monospace" font-size="11.5" fill="#89A6FF">app-server RPC + exec</text>
+    <text x="18" y="200" font-family="Inter, sans-serif" font-size="12" fill="#A6AAB4">Rollout JSONL &amp; App lock handoff</text>
+
+    <rect y="248" width="270" height="104" rx="14" fill="#1C1E24" stroke="rgba(255,255,255,0.12)"/>
+    <text x="18" y="278" font-family="Inter, sans-serif" font-size="16" font-weight="700" fill="#F2F3F5">Gemini Antigravity</text>
+    <text x="18" y="301" font-family="'JetBrains Mono', Consolas, monospace" font-size="11.5" fill="#89A6FF">sidecar + agy acp + stream-json</text>
+    <text x="18" y="324" font-family="Inter, sans-serif" font-size="12" fill="#A6AAB4">SQLite summaries + /usage probe</text>
+  </g>
+</svg>

@@ -1,0 +1,359 @@
+/* baton —— 手机端只读会话浏览
+   两支队色地位对等：claude 雾紫 / codex 雾青。中性走冷灰蓝。
+   只用系统 CJK 栈：CJK web 字体动辄数 MB，经隧道下发不可接受。 */
+
+:root {
+  color-scheme: light dark;
+
+  --bg: #f6f7f9;
+  --surface: #ffffff;
+  --ink: #16191f;
+  --muted: #697080;
+  --hairline: #e2e5ea;
+
+  --claude: #7c6bd6;
+  --codex: #2f9e8f;
+  --alert: #d0453b;
+
+  --gap: 14px;
+  --radius: 10px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #12141a;
+    --surface: #191c23;
+    --ink: #e6e8ec;
+    --muted: #8b93a3;
+    --hairline: #252932;
+
+    --claude: #9c8ce8;
+    --codex: #46b7a6;
+    --alert: #e8695c;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 400 16px/1.6 system-ui, -apple-system, "Segoe UI", "PingFang SC",
+        "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  -webkit-text-size-adjust: 100%;
+}
+
+#shell {
+  max-width: 62ch;
+  margin: 0 auto;
+  padding: max(12px, env(safe-area-inset-top)) var(--gap)
+           calc(32px + env(safe-area-inset-bottom));
+}
+
+/* ── 头部 ───────────────────────────────────────── */
+
+.bar {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 6px 0 14px;
+}
+
+.mast {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 640;
+  letter-spacing: -0.01em;
+}
+
+.count { color: var(--muted); font-size: 13px; }
+
+.convo-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+button {
+  font: inherit;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  padding: 7px 13px;
+  cursor: pointer;
+}
+
+button:focus-visible { outline: 2px solid var(--claude); outline-offset: 2px; }
+button:disabled { opacity: 0.45; cursor: default; }
+
+.ghost {
+  background: none;
+  border-color: transparent;
+  color: var(--muted);
+  padding: 4px 6px;
+  font-size: 14px;
+  /* 不加这两条，窄屏下「返回」会被 flex 挤成竖排两行 */
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.ghost:hover { color: var(--ink); }
+.bar .ghost:last-child { margin-left: auto; }
+
+/* ── 配对 ───────────────────────────────────────── */
+
+.lede { color: var(--muted); font-size: 14px; max-width: 44ch; }
+
+#pair-form { display: flex; gap: 8px; margin-top: 18px; }
+
+#pair-code {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  padding: 10px 12px;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+}
+
+#pair-code:focus-visible { outline: 2px solid var(--claude); outline-offset: 1px; }
+
+.error { color: var(--alert); font-size: 14px; }
+
+/* ── 新建会话 ───────────────────────────────────── */
+
+.new-form {
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius);
+  padding: 12px;
+  margin-bottom: 12px;
+}
+
+.new-row { display: flex; gap: 8px; margin-bottom: 8px; }
+
+.new-form select,
+.new-form textarea {
+  font: inherit;
+  color: var(--ink);
+  background: var(--bg);
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  padding: 8px 10px;
+  min-width: 0;
+}
+
+.new-form select { flex: 1; }
+.new-form textarea { width: 100%; resize: vertical; }
+
+.new-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 8px; }
+
+/* ── 会话链列表 ─────────────────────────────────── */
+
+.chains { list-style: none; margin: 0; padding: 0; }
+
+.chain {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius);
+  padding: 13px 14px;
+  margin-bottom: 8px;
+}
+
+.chain-title { font-size: 16px; font-weight: 560; line-height: 1.4; overflow-wrap: anywhere; }
+
+/* 非第 1 档：标题由 baton 推导，不保证与桌面一致。
+   点线下划线按约定表示「不确定 / 另有定义」，比 ~ 前缀可读。 */
+.chain-title.derived {
+  color: var(--muted);
+  font-weight: 480;
+  text-decoration: underline dotted currentColor;
+  text-underline-offset: 3px;
+}
+
+.chain-foot {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 9px;
+  min-width: 0;
+}
+
+/* agent 名靠右，与目录名之间自然拉开，不必用分隔符 */
+.chain-foot .chain-agent { margin-left: auto; }
+
+/* 分段轨道：一个装置同时表达 agent（颜色）、分支数（段数）、当前位置（实心尖端）。
+   单成员链自然收缩成一个点，多分支链自己浮出来。 */
+.track {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+}
+
+.node {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  border: 1.5px solid var(--accent);
+}
+
+.node.tip { background: var(--accent); }
+
+.rail { width: 13px; height: 1.5px; background: var(--accent); opacity: 0.45; }
+
+/* 目录名是识别项目的关键，比 agent 名更该被看见 */
+.chain-dir {
+  font-size: 13px;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* agent 名是色觉之外的冗余通道——轨道已用颜色编码，这里给不依赖颜色的读者 */
+.chain-agent {
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+
+.chain[data-agent="claude"] { --accent: var(--claude); }
+.chain[data-agent="codex"] { --accent: var(--codex); }
+
+/* ── 对话 ───────────────────────────────────────── */
+
+.status-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.status { color: var(--muted); font-size: 13px; margin: 0; }
+.status.bad { color: var(--alert); }
+
+.ghost.danger { color: var(--alert); margin-left: auto; }
+
+.earlier {
+  display: block;
+  width: 100%;
+  color: var(--muted);
+  font-size: 14px;
+  margin-bottom: 14px;
+}
+
+.events { list-style: none; margin: 0; padding: 0; }
+
+.ev { padding: 13px 0; border-top: 1px solid var(--hairline); }
+.ev:first-child { border-top: none; }
+
+.who {
+  font-size: 13px;
+  font-weight: 560;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+
+.ev[data-role="user"] .who { color: var(--ink); }
+
+.body { white-space: pre-wrap; overflow-wrap: anywhere; }
+
+.think > summary {
+  color: var(--muted);
+  font-size: 14px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.think > summary::before { content: "▸ "; }
+.think[open] > summary::before { content: "▾ "; }
+.think > .body { color: var(--muted); font-size: 15px; margin-top: 6px; }
+
+/* 工具调用与结果用同一条左规绑在一起——它们是一件事的两半 */
+.tool {
+  border-left: 2px solid var(--hairline);
+  padding-left: 11px;
+  margin-top: 2px;
+}
+
+.tool-name { font-size: 13px; font-weight: 560; color: var(--muted); }
+
+.tool pre {
+  margin: 4px 0 0;
+  font: 13px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace;
+  white-space: pre;
+  overflow-x: auto;
+  color: var(--ink);
+}
+
+.turn { font-size: 13px; color: var(--muted); }
+.turn.bad { color: var(--alert); }
+
+/* ── 发送 ───────────────────────────────────────── */
+
+.composer {
+  position: sticky;
+  bottom: 0;
+  padding: 10px 0 calc(6px + env(safe-area-inset-bottom));
+  background: var(--bg);
+  border-top: 1px solid var(--hairline);
+}
+
+.composer-row {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+}
+
+#msg {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  padding: 9px 11px;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  resize: vertical;
+}
+
+#msg:focus-visible { outline: 2px solid var(--accent, var(--claude)); outline-offset: 1px; }
+#msg:disabled { opacity: 0.45; }
+
+.composer-actions { display: flex; gap: 6px; flex: 0 0 auto; }
+
+.hint { color: var(--muted); font-size: 13px; margin: 0 0 8px; }
+
+/* ── 提示条 ─────────────────────────────────────── */
+
+#banner {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  padding: 11px var(--gap);
+  background: var(--ink);
+  color: var(--bg);
+  font-size: 14px;
+}
+
+#banner[data-clickable="1"] { cursor: pointer; }
+
+/* 新事件到达时轻微淡入——motion 只用来说明「变了什么」 */
+@keyframes settle { from { opacity: 0; } to { opacity: 1; } }
+.ev.fresh { animation: settle 180ms ease-out; }
+
+@media (prefers-reduced-motion: reduce) {
+  .ev.fresh { animation: none; }
+}
