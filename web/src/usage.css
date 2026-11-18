@@ -1,0 +1,193 @@
+/* 用量面板（Usage.tsx）。设置页与浮窗共用；类名一律 use- 前缀 */
+
+.use-dlg {
+  width: min(560px, 100%);
+}
+
+.use-dlg .use {
+  padding: 16px 20px 18px;
+}
+
+.use-cards {
+  display: grid;
+  gap: 12px;
+}
+
+.use-card {
+  padding: 14px 16px 16px;
+  border-radius: var(--r-md);
+  background: var(--bg-sunken);
+}
+
+.use-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.use-card-name {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--tx-primary);
+}
+
+.use-plan {
+  padding: 0 7px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 18px;
+}
+
+.use-asof {
+  margin-left: auto;
+  font-size: 11.5px;
+  color: var(--tx-tertiary);
+}
+
+.use-wins {
+  display: grid;
+  gap: 14px;
+  margin-top: 12px;
+}
+
+.use-win-top {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.use-win-label {
+  font-size: 13px;
+  color: var(--tx-secondary);
+}
+
+.use-win-pct {
+  font-size: 15px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--tx-primary);
+}
+
+.use-win-pct-k {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--tx-tertiary);
+}
+
+/* 快用完了，数字跟着条一起变色 */
+.use-win-pct.is-mid {
+  color: var(--tx-warning);
+}
+
+.use-win-pct.is-high {
+  color: var(--tx-danger);
+}
+
+.use-asof.is-stale {
+  color: var(--tx-warning);
+}
+
+.use-bar {
+  height: 8px;
+  margin-top: 6px;
+  border-radius: 999px;
+  background: var(--bd-hairline);
+  overflow: hidden;
+}
+
+.use-bar-fill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  transition: width 600ms var(--spring-soft);
+}
+
+.use-bar-fill.is-mid {
+  background: var(--tx-warning);
+}
+
+.use-bar-fill.is-high {
+  background: var(--tx-danger);
+}
+
+.use-win-reset {
+  display: block;
+  margin-top: 5px;
+  font-size: 11.5px;
+  color: var(--tx-tertiary);
+}
+
+.use-note {
+  margin: 10px 0 0;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--tx-secondary);
+}
+
+.use-err {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border-radius: var(--r-md);
+  background: color-mix(in srgb, var(--tx-danger) 8%, var(--bg-page));
+  font-size: 13px;
+  color: var(--tx-danger);
+}
+
+.use-err .dim {
+  color: var(--tx-secondary);
+}
+
+.use-foot {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.use-hint {
+  flex: 1;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--tx-tertiary);
+}
+
+.use-refresh {
+  flex: none;
+  padding: 7px 14px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--bg-sunken);
+  color: var(--tx-primary);
+  font-family: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.use-refresh:hover:not(:disabled) {
+  background: var(--bg-press);
+}
+
+.use-refresh:disabled {
+  color: var(--tx-tertiary);
+  cursor: default;
+}
+
+/* 设置页里卡片放在纸面上，凹槽底色要换成浮起的那一层，不然和纸分不开 */
+.set .use-card {
+  background: var(--bg-sunken);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .use-bar-fill {
+    transition: none;
+  }
+}

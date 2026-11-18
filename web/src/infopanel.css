@@ -1,0 +1,332 @@
+/* 会话页右侧「信息」窗格（2026-11-10）。宽屏是和对话并排的一列；窄屏是盖在对话上的抽屉 */
+
+.conv-wrap {
+  display: flex;
+  height: 100%;
+  min-height: 0;
+  min-width: 0;
+}
+
+.conv-wrap > .conv {
+  flex: 1;
+  min-width: 0;
+}
+
+.info {
+  flex: none;
+  width: 320px;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid var(--bd-hairline);
+  background: var(--bg-page);
+  min-height: 0;
+}
+
+@media (max-width: 1099px) {
+  .info {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 30;
+    width: min(340px, 92vw);
+    box-shadow: -12px 0 32px rgba(0, 0, 0, 0.12);
+  }
+}
+
+.info-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 60px;
+  padding: 10px 14px 10px 20px;
+}
+
+.info-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--tx-secondary);
+}
+
+.info-x {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: var(--tx-tertiary);
+  cursor: pointer;
+}
+
+.info-x:hover { background: var(--bg-hover); color: var(--tx-secondary); }
+.info-x svg { width: 16px; height: 16px; }
+
+.info-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 20px 28px;
+  font-size: 13px;
+  color: var(--tx-secondary);
+}
+
+.info-sec { padding: 14px 0 6px; }
+.info-sec + .info-sec { border-top: 1px solid var(--bd-hairline); }
+
+.info-sec h3 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 10px;
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--tx-tertiary);
+}
+
+.info-count {
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  color: var(--tx-tertiary);
+}
+
+.info-dim { margin: 0; color: var(--tx-tertiary); }
+.info-hint { margin: 8px 0 0; font-size: 12px; color: var(--tx-tertiary); }
+
+.info-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+  padding: 6px 12px;
+  border: 1px solid var(--bd-hairline);
+  border-radius: 999px;
+  background: var(--bg-page);
+  color: var(--tx-secondary);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.info-btn:hover { background: var(--bg-hover); color: var(--tx-primary); }
+.info-btn svg { width: 14px; height: 14px; }
+.info-btn.is-ghost { margin-top: 0; }
+
+/* 目标 */
+.goalcard {
+  padding: 12px 12px 12px;
+  border: 1px solid var(--bd-hairline);
+  border-radius: var(--r-md);
+  margin-bottom: 10px;
+}
+
+.goalcard.is-live {
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--bd-hairline));
+  background: var(--accent-soft);
+}
+
+.goalcard-top {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.goalcard.is-met .goalcard-top { color: var(--tx-success); }
+.goalcard-ico { width: 14px; height: 14px; }
+.goalcard-cond { margin: 6px 0 0; color: var(--tx-primary); overflow-wrap: anywhere; }
+.goalcard-why { margin: 6px 0 0; font-size: 12px; color: var(--tx-tertiary); overflow-wrap: anywhere; }
+
+/* 计划 */
+.plan { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+
+.plan-item {
+  display: flex;
+  gap: 9px;
+  align-items: flex-start;
+  line-height: 1.45;
+}
+
+.plan-mark {
+  flex: none;
+  width: 15px;
+  height: 15px;
+  margin-top: 2px;
+  border: 1.5px solid var(--tx-tertiary);
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  font-size: 9px;
+  color: var(--tx-inverse);
+}
+
+.plan-item.is-in_progress .plan-mark {
+  border-color: var(--accent);
+  background: radial-gradient(circle, var(--accent) 0 3px, transparent 3.5px);
+}
+
+.plan-item.is-in_progress .plan-text { color: var(--tx-primary); font-weight: 500; }
+
+.plan-item.is-completed .plan-mark {
+  border-color: var(--tx-tertiary);
+  background: var(--tx-tertiary);
+}
+
+.plan-item.is-completed .plan-text { color: var(--tx-tertiary); text-decoration: line-through; }
+
+.info-recap { margin: 0; line-height: 1.55; color: var(--tx-secondary); }
+
+/* 上下文 */
+.ctx-bar {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--bg-sunken);
+  overflow: hidden;
+}
+
+.ctx-bar > span { display: block; height: 100%; border-radius: inherit; background: var(--accent); }
+.ctx-bar.is-high > span { background: var(--tx-warning); }
+.ctx-num { margin: 7px 0 0; font-variant-numeric: tabular-nums; }
+
+/* 会话 */
+.info-kv {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 7px 14px;
+  margin: 0;
+}
+
+.info-kv dt { color: var(--tx-tertiary); }
+.info-kv dd { margin: 0; color: var(--tx-primary); min-width: 0; overflow-wrap: anywhere; }
+.info-kv .mono, .file-dir, .diff { font-family: var(--font-mono); }
+
+/* 改动的文件 */
+.files { list-style: none; margin: 0 -8px; padding: 0; }
+
+.file-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.file-row:hover, .file.is-open .file-row { background: var(--bg-hover); }
+
+.file-name {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  color: var(--tx-primary);
+  overflow: hidden;
+}
+
+.file-name, .file-dir { white-space: nowrap; text-overflow: ellipsis; overflow: hidden; }
+.file-dir { font-size: 11px; color: var(--tx-tertiary); }
+
+.file-diff {
+  flex: none;
+  display: flex;
+  gap: 6px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.file-diff .add { color: var(--tx-success); }
+.file-diff .del { color: var(--tx-danger); }
+
+.file-edits { padding: 4px 8px 10px; display: flex; flex-direction: column; gap: 8px; }
+
+.diff {
+  margin: 0;
+  max-height: 260px;
+  overflow: auto;
+  padding: 8px 0;
+  border-radius: 8px;
+  background: var(--bg-sunken);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+.diff > span { display: block; padding: 0 10px; white-space: pre; }
+.diff-del { color: var(--tx-danger); background: color-mix(in srgb, var(--tx-danger) 7%, transparent); }
+.diff-add { color: var(--tx-success); background: color-mix(in srgb, var(--tx-success) 7%, transparent); }
+.diff-note { color: var(--tx-tertiary); }
+
+/* 页头上那颗开关 */
+.conv-panel {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: var(--tx-tertiary);
+  cursor: pointer;
+}
+
+.conv-panel:hover, .conv-panel.is-on { background: var(--bg-hover); color: var(--tx-secondary); }
+.conv-panel svg { width: 16px; height: 16px; }
+
+/* 输入框底下、配置条旁边那颗「目标」。没设时和配置条一样淡；设着时用强调色 */
+.goalpill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px 4px 8px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--tx-tertiary);
+  font-family: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background-color var(--t-hover) var(--ease), color var(--t-hover) var(--ease);
+}
+
+.goalpill:hover { background: var(--bg-hover); color: var(--tx-secondary); }
+.goalpill svg { width: 13px; height: 13px; }
+.goalpill.is-on { background: var(--accent-soft); color: var(--accent); }
+
+.conv-wrap { position: relative; }
+
+/* 目标模式开着：这颗变成实心的强调色，提醒「这句发出去是目标」 */
+.goalpill.is-mode {
+  background: var(--accent);
+  color: var(--tx-inverse);
+}
+
+.goalpill.is-mode:hover {
+  background: var(--accent-active);
+  color: var(--tx-inverse);
+}
+
+/* 目标停下了、要人管（Codex：暂停、卡住、额度或预算用完） */
+.goalpill.is-warn {
+  background: color-mix(in srgb, var(--tx-warning) 12%, transparent);
+  color: var(--tx-warning);
+}
+
+.goalcard.is-warn {
+  border-color: color-mix(in srgb, var(--tx-warning) 35%, var(--bd-hairline));
+  background: color-mix(in srgb, var(--tx-warning) 7%, var(--bg-page));
+}
+
+.goalcard.is-warn .goalcard-top {
+  color: var(--tx-warning);
+}

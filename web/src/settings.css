@@ -1,0 +1,359 @@
+/*
+  设置页（About.tsx）。宽屏左边一列分区目录、右边内容；窄屏目录收成顶上一排。
+  类名一律 `set-` 前缀。
+*/
+
+.set {
+  height: 100%;
+  overflow-y: auto;
+  background: var(--bg-page);
+}
+
+.set-inner {
+  max-width: 880px;
+  margin: 0 auto;
+  padding: clamp(36px, 7vh, 72px) clamp(18px, 3vw, 36px) 80px;
+}
+
+.set-title {
+  margin: 0 0 28px;
+  font-family: var(--font-display);
+  font-size: clamp(26px, 3vw, 32px);
+  line-height: 1.2;
+  letter-spacing: -0.03em;
+  font-weight: 700;
+  color: var(--tx-primary);
+}
+
+.set-cols {
+  display: grid;
+  grid-template-columns: 168px minmax(0, 1fr);
+  gap: 36px;
+  align-items: start;
+}
+
+.set-nav {
+  position: sticky;
+  top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.set-nav-item {
+  padding: 8px 12px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--tx-secondary);
+  font-family: inherit;
+  font-size: 13.5px;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color var(--t-hover) var(--ease), color var(--t-hover) var(--ease);
+}
+
+.set-nav-item:hover {
+  background: var(--bg-hover);
+  color: var(--tx-primary);
+}
+
+.set-nav-item.is-on {
+  background: var(--bg-sunken);
+  color: var(--tx-primary);
+  font-weight: 600;
+}
+
+.set-sec {
+  scroll-margin-top: 16px;
+  padding-bottom: 28px;
+}
+
+.set-sec + .set-sec {
+  padding-top: 28px;
+  border-top: 1px solid var(--bd-hairline);
+}
+
+.set-h {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 700;
+  color: var(--tx-primary);
+}
+
+.set-p {
+  margin: 6px 0 0;
+  font-size: 13.5px;
+  line-height: 1.7;
+  color: var(--tx-secondary);
+}
+
+/* 一行设置：左边说是什么，右边是控件 */
+.set-row,
+.set-danger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 16px 0;
+  border-bottom: 1px solid var(--bd-hairline);
+}
+
+.set-row:last-child {
+  border-bottom: 0;
+}
+
+.set-row-text {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.set-row-label {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--tx-primary);
+}
+
+.set-row-note {
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--tx-tertiary);
+}
+
+/* 分段选择：一条凹槽，选中的那格是一小块白纸——和侧栏选中行同一种材质 */
+.set-choice {
+  flex: none;
+  display: inline-flex;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 11px;
+  background: var(--bg-sunken);
+}
+
+.set-opt {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 60px;
+  padding: 6px 12px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--tx-secondary);
+  font-family: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background-color var(--t-hover) var(--ease), color var(--t-hover) var(--ease),
+    box-shadow var(--t-hover) var(--ease);
+}
+
+.set-opt:hover:not(.is-on) {
+  color: var(--tx-primary);
+}
+
+.set-opt.is-on {
+  background: var(--bg-raised);
+  box-shadow: var(--lift-1);
+  color: var(--tx-primary);
+  font-weight: 600;
+}
+
+.set-opt-note {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--tx-tertiary);
+}
+
+.set-btn {
+  flex: none;
+  margin-top: 14px;
+  padding: 8px 14px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--bg-sunken);
+  color: var(--tx-primary);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color var(--t-hover) var(--ease), transform var(--t-press) var(--ease);
+}
+
+.set-row .set-btn {
+  margin-top: 0;
+}
+
+.set-btn:hover {
+  background: var(--bg-press);
+}
+
+.set-btn:active {
+  transform: scale(0.97);
+}
+
+.set-keys {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 0 28px;
+  margin-top: 14px;
+}
+
+.set-key {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--bd-hairline);
+  font-size: 13.5px;
+  color: var(--tx-primary);
+}
+
+.set-code {
+  padding: 4px 10px;
+  border-radius: var(--r-xs);
+  background: var(--bg-sunken);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  color: var(--tx-secondary);
+}
+
+.set-state {
+  flex: none;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--tx-success) 12%, var(--bg-page));
+  color: var(--tx-success);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.set-state.is-off {
+  background: color-mix(in srgb, var(--tx-warning) 14%, var(--bg-page));
+  color: var(--tx-warning);
+}
+
+.set-danger {
+  margin-top: 8px;
+  border-bottom: 0;
+}
+
+.set-danger .about-danger {
+  flex: none;
+  margin-top: 0;
+}
+
+@media (max-width: 760px) {
+  .set-cols {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 18px;
+  }
+
+  .set-nav {
+    position: static;
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+
+  .set-row,
+  .set-danger {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 12px;
+  }
+}
+
+.set-usage {
+  margin-top: 14px;
+}
+
+.set-devices,
+.set-qr-box {
+  margin-top: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.set-dev-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 12px 14px;
+  border: 1px solid var(--bd-hairline);
+  border-radius: var(--r-md);
+  background: var(--bg-sunken);
+}
+
+.set-dev-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.set-dev-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--tx-primary);
+}
+
+.set-dev-sub {
+  font-size: 12px;
+  color: var(--tx-tertiary);
+}
+
+.set-dev-badge {
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.set-qr-card {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 18px;
+  padding: 16px;
+  border: 1px solid var(--bd-hairline);
+  border-radius: var(--r-md);
+  background: var(--bg-sunken);
+}
+
+.set-qr-img {
+  width: 176px;
+  height: 176px;
+  border-radius: var(--r-sm);
+  background: #fff;
+  padding: 6px;
+}
+
+.set-qr-info {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 200px;
+  flex: 1;
+}
+
+.set-qr-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.set-disclaimer {
+  margin-top: 16px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--tx-tertiary);
+}

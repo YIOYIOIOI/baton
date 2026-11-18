@@ -1,0 +1,67 @@
+{
+  "name": "baton",
+  "version": "0.2.0",
+  "description": "Continue local Claude Code, Codex, and Gemini Antigravity sessions from any browser or phone — zero cloud relay, zero database, API-relay friendly.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/YIOYIOIOI/baton.git"
+  },
+  "homepage": "https://github.com/YIOYIOIOI/baton#readme",
+  "bugs": {
+    "url": "https://github.com/YIOYIOIOI/baton/issues"
+  },
+  "type": "module",
+  "bin": {
+    "baton": "./src/cli.js"
+  },
+  "files": [
+    "src/",
+    "scripts/",
+    "web/dist/",
+    "app/dist/",
+    "sidecars/",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "claude-code",
+    "codex",
+    "antigravity",
+    "ai-coding",
+    "remote-control",
+    "pwa",
+    "self-hosted"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "test": "node --test --import ./test/setup.js \"test/*.test.js\"",
+    "start": "node src/cli.js",
+    "doctor": "node src/cli.js doctor",
+    "pair": "node scripts/pair.mjs",
+    "revoke-legacy": "node scripts/revoke-legacy.mjs",
+    "setup": "npm ci && npm --prefix web ci && npm --prefix app ci && npm run build",
+    "build": "npm run web:build && npm run build:web",
+    "app:web": "npm --prefix app run web",
+    "app:start": "npm --prefix app run start",
+    "app:tunnel": "npm --prefix app run start -- --tunnel",
+    "app:test": "npm --prefix app test",
+    "build:web": "npm --prefix app run build:web",
+    "web:dev": "npm --prefix web run dev",
+    "web:build": "npm --prefix web run build",
+    "lint": "oxlint --deny-warnings src test scripts",
+    "typecheck": "tsc -p tsconfig.json",
+    "autostart": "node scripts/install-autostart.mjs",
+    "oss:check": "node scripts/verify-oss-clean.mjs",
+    "oss:prepare": "node scripts/publish-oss.mjs --prepare",
+    "check": "npm run lint && npm run typecheck && npm test"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.0",
+    "oxlint": "1.81.0",
+    "typescript": "6.0.3"
+  }
+}

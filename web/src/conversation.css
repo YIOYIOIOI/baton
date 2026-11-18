@@ -1,0 +1,1659 @@
+/*
+ * 会话视图。
+ *
+ * 分工：**用户那句是气泡，agent 的输出是文档。**
+ * 两边都做成气泡是聊天软件的惯性——但 agent 的一条回复常常是几百字加几段代码，
+ * 塞进气泡会被挤成一条细带，而且气泡的圆角和内边距会把代码块的对齐全打乱。
+ * ChatGPT、Claude、Codex 的网页端都是这个分工。
+ *
+ * 三种东西，三种材质：
+ *   你说的    墨色一块（--bubble）——整条滚动区里最实的东西，往回翻时的锚点
+ *   agent 说的 衬线正文，直接排在纸上
+ *   agent 做的 一句话（折起来）/ 一条时间线（展开）——过程，能查，但不抢
+ */
+
+.conv {
+  /* 输入区浮在滚动区之上，定位基准在这儿；--fade-base 由 Composer 实测写入 */
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+  background: var(--bg-page);
+}
+
+/* ── 头部 ───────────────────────────────────────────────────────────────── */
+
+/*
+ * 不画底线。下面的滚动区顶上有 20px 的渐隐（见 .conv-scroll），内容是淡进
+ * 头部底下去的——一条硬线会把「上面还有」说成「到此为止」，和底部那段
+ * 渐隐是同一个道理。
+ */
+/* 不给 z-index：侧栏收起时那颗展开把手（.rail-peek，z-index 3）浮在它上面，
+   这里一旦叠出更高的层，白底就会把把手盖掉 */
+.conv-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 60px;
+  padding: 10px clamp(18px, 3vw, 36px);
+  background: var(--bg-page);
+}
+
+.conv-back {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--r-sm);
+  color: var(--tx-secondary);
+  font-size: 17px;
+  text-decoration: none;
+  transition: background-color var(--t-hover) var(--ease);
+}
+
+.conv-back:hover {
+  background: var(--bg-hover);
+}
+
+@media (min-width: 900px) {
+  .conv-back {
+    display: none;
+  }
+}
+
+.conv-id {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.conv-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-display);
+  font-size: 15.5px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  color: var(--tx-primary);
+}
+
+.conv-sub {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--tx-tertiary);
+}
+
+.conv-sub > span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.conv-agent {
+  flex: none;
+  padding: 0 7px;
+  border-radius: 999px;
+  background: var(--bg-sunken);
+  color: var(--tx-secondary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 18px;
+}
+
+/* ── 滚动区 ─────────────────────────────────────────────────────────────── */
+
+/*
+  底部**渐隐**，不是硬切。
+
+  owner：「文字渲染区域再往下放，然后做成渐渐消失类似 claude 这样」。原来滚动区
+  到输入框上沿就是一条干净的断线，最后一行要么完整要么没有——而 Claude 那边内容
+  是淡出去的，读起来「下面还有」而不是「到此为止」。
+
+  用 mask 而不是盖一层渐变色块：盖色块要求底下的背景是确定的纯色，换主题、
+  加毛玻璃都会露馅；mask 直接作用在像素上，底下是什么都对。
+
+  顶上同理补了 20px：头部不再画底线，内容从它底下淡进去。
+*/
+.conv-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  /*
+    关掉浏览器自带的滚动锚定：往前翻历史时前插的那一段由 Conversation.tsx 自己补位移（只补一次）。
+    两边都补就是补两次——正在读的那一行被顶上去一整页（2026-11-07 实测 -239 / -305 / -146px）。
+    而浏览器在正好滚到 0 时不锚定、Safari 压根不支持，靠它就时灵时不灵。
+  */
+  overflow-anchor: none;
+  /*
+    完全透明的那条线**落在输入框上沿**（--fade-base 是输入框上沿到视口底的距离，
+    由 Composer 实测写入），往上 44px 是渐变带。
+
+    上一版止于滚动区下沿，而那条线在配置行之上、比输入框上沿高出一截——
+    owner：「消失线要对齐到对话框的上面那个线那里，现在还是太上面」。
+    ⚠ 兜底值只能写在 `var()` 的第二个参数里，**不能在这儿声明 `--fade-base: 0px`**——
+    那会盖掉从 .conv 继承下来的实测值（JS 写在父元素上），于是永远用 0。
+  */
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    #000 20px,
+    #000 calc(100% - var(--fade-base, 0px) - 44px),
+    transparent calc(100% - var(--fade-base, 0px))
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    #000 20px,
+    #000 calc(100% - var(--fade-base, 0px) - 44px),
+    transparent calc(100% - var(--fade-base, 0px))
+  );
+}
+
+.conv-inner {
+  max-width: var(--conv-w);
+  margin: 0 auto;
+  /*
+    底部留白 = 输入区那一块 + 渐隐带（44px）+ 一点余量。少了的话最后一行永远停在
+    半透明里、怎么滚都看不清——这是加 mask 必须配套改的一处。
+
+    余量从 16 收到 4：输入区上方原来还摞着配置条和「运行中」那两行，现在没有了，
+    滚到底时状态栏离输入框空出一大截（1160×720 实测 86px）。
+  */
+  padding: 22px clamp(18px, 3vw, 36px) calc(var(--fade-base, 0px) + 48px);
+}
+
+.conv-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  margin: 18vh 0 0;
+  font-size: 14px;
+  color: var(--tx-tertiary);
+}
+
+.older,
+.conv-err {
+  margin: 0 0 22px;
+  font-size: 12.5px;
+  color: var(--tx-tertiary);
+  text-align: center;
+}
+
+.older {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  /* 在读 / 按钮 / 到头了三种样子一样高，换来换去下面的内容不跟着跳 */
+  min-height: 26px;
+}
+
+/* 平时是一行小字的样子，悬停才看得出能点——它多半一出现就自己开始读了，不用抢眼 */
+.older-btn {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: 0;
+  padding: 4px 12px;
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.older-btn:hover {
+  color: var(--tx-secondary);
+  background: var(--bg-hover);
+}
+
+.conv-err {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 12px 14px;
+  border-radius: var(--r-md);
+  background: color-mix(in srgb, var(--tx-danger) 7%, var(--bg-page));
+  color: var(--tx-danger);
+  font-size: 13px;
+  text-align: left;
+}
+
+.conv-err .dim {
+  color: var(--tx-secondary);
+}
+
+/* ── 消息 ───────────────────────────────────────────────────────────────── */
+
+/* 20px 在「一段话 + 一行工具」交替时太空了，正文和它下面那行像两块无关的东西 */
+.msg {
+  margin: 0 0 12px;
+  display: flex;
+}
+
+/*
+ * 用户那句开启新的一轮，所以上面多留一截——一轮与一轮之间的呼吸，
+ * 比一轮之内「正文 → 工具 → 正文」的间距大一档，眼睛才分得出段落。
+ */
+.msg-user {
+  justify-content: flex-end;
+  margin-top: 26px;
+  margin-bottom: 16px;
+}
+
+.conv-inner > .msg-user:first-child,
+.older + .msg-user {
+  margin-top: 0;
+}
+
+/* 用户：靠右的墨色气泡，宽度封顶。短句就该是短气泡，不要拉成整行 */
+.msg-user .msg-body {
+  max-width: min(76%, 620px);
+  padding: 10px 16px;
+  border-radius: 20px 20px 6px 20px;
+  background: var(--bubble);
+  color: var(--bubble-tx);
+}
+
+/* agent：整幅文档靠左，不套气泡 */
+.msg-agent .msg-body,
+.msg-system .msg-body {
+  min-width: 0;
+  flex: 1;
+}
+
+.msg-system .msg-body {
+  font-size: 13.5px;
+  color: var(--tx-tertiary);
+}
+
+/* ── 思考 ───────────────────────────────────────────────────────────────── */
+
+.think {
+  margin: 0 0 12px;
+  font-size: 13.5px;
+  color: var(--tx-tertiary);
+}
+
+.think > summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: -8px;
+  padding: 3px 11px 3px 8px;
+  border-radius: 999px;
+  font-size: 12.5px;
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+  transition: background-color var(--t-hover) var(--ease), color var(--t-hover) var(--ease);
+}
+
+.think > summary:hover {
+  background: var(--bg-hover);
+  color: var(--tx-secondary);
+}
+
+.think > summary::-webkit-details-marker {
+  display: none;
+}
+
+/* 折角，和 .chev 同一个画法（shared.css）。details 的 summary 挂不了 React 组件，只能在这儿重画一个 */
+.think > summary::before {
+  content: '';
+  width: 5px;
+  height: 5px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(-45deg);
+  transition: transform var(--t-layout) var(--spring-soft);
+}
+
+.think[open] > summary::before {
+  transform: rotate(45deg) translate(-1px, -1px);
+}
+
+.think > .md {
+  margin-top: 6px;
+  padding: 2px 0 2px 14px;
+  border-left: 2px solid var(--bd-hairline);
+  font-size: 13.5px;
+  color: var(--tx-tertiary);
+}
+
+/* ── markdown ───────────────────────────────────────────────────────────── */
+
+/*
+  正文尺寸。**对着 Claude 原生收过一档**——owner：「网页的字太大了，字和命令的
+  间距也太大了」。原来 15.5/1.75 在宽屏上一段话就占掉半屏，而这一页的主角是
+  「一段话 + 一行过程」的交替节奏，字一大节奏就散了。
+*/
+.md {
+  font-size: 14.5px;
+  line-height: 1.68;
+  color: var(--tx-primary);
+  overflow-wrap: anywhere;
+}
+
+.msg-user .md {
+  color: inherit;
+}
+
+.md > :first-child {
+  margin-top: 0;
+}
+
+.md > :last-child {
+  margin-bottom: 0;
+}
+
+.md p {
+  margin: 0 0 9px;
+}
+
+.md h1,
+.md h2,
+.md h3,
+.md h4 {
+  margin: 24px 0 10px;
+  line-height: 1.3;
+  letter-spacing: -0.015em;
+  font-weight: 700;
+}
+
+.md h1 { font-size: 1.38em; }
+.md h2 { font-size: 1.22em; }
+.md h3 { font-size: 1.08em; }
+.md h4 { font-size: 1em; }
+
+.md ul,
+.md ol {
+  margin: 0 0 12px;
+  padding-left: 1.5em;
+}
+
+.md li {
+  margin: 3px 0;
+}
+
+.md li::marker {
+  color: var(--tx-tertiary);
+}
+
+.md li > ul,
+.md li > ol {
+  margin: 3px 0;
+}
+
+.md blockquote {
+  margin: 0 0 12px;
+  padding: 2px 0 2px 16px;
+  border-left: 3px solid var(--bd-strong);
+  color: var(--tx-secondary);
+}
+
+.md hr {
+  margin: 22px 0;
+  border: 0;
+  border-top: 1px solid var(--bd-hairline);
+}
+
+.md a {
+  color: var(--accent);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+
+/* 行内代码。**不换字号**——换了会把行高顶乱，一段里有几个就晃几下 */
+.md code {
+  padding: 1.5px 5px;
+  border-radius: var(--r-xs);
+  background: var(--bg-sunken);
+  font-family: var(--font-mono);
+  font-size: 0.87em;
+}
+
+.md-pre {
+  position: relative;
+  margin: 2px 0 14px;
+  padding: 14px 16px;
+  border-radius: var(--r-md);
+  background: var(--bg-sunken);
+  box-shadow: inset 0 0 0 1px var(--bd-hairline);
+  overflow-x: auto;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.65;
+}
+
+/* 块级代码里的 code 要退掉行内那层背景和内边距，否则会套两层 */
+.md-pre code {
+  padding: 0;
+  border-radius: 0;
+  background: none;
+  font-size: inherit;
+}
+
+/* 代码块外面那层：语言标签与复制按钮挂在这里，不随 <pre> 横向滚走 */
+.md-code {
+  position: relative;
+}
+
+.md-code-bar {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.md-lang {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--tx-tertiary);
+  user-select: none;
+}
+
+/* 复制平时藏着，悬停到代码块上才出来——一页十几个代码块，常驻的按钮就是噪音 */
+.md-copy {
+  padding: 2px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: var(--bg-raised);
+  box-shadow: var(--lift-1);
+  color: var(--tx-secondary);
+  font-family: inherit;
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity var(--t-hover) var(--ease), color var(--t-hover) var(--ease);
+}
+
+.md-code:hover .md-copy,
+.md-copy:focus-visible {
+  opacity: 1;
+}
+
+.md-copy:hover {
+  color: var(--tx-primary);
+}
+
+@media (hover: none) {
+  .md-copy {
+    opacity: 1;
+  }
+}
+
+/* 用户气泡里的代码与链接：墨底上换一套，不然浅灰的代码底会在黑块上开一个亮洞 */
+.msg-user .md code,
+.msg-user .md-pre {
+  background: var(--bubble-sunken);
+  box-shadow: none;
+}
+
+.msg-user .md a,
+.msg-user .md-file {
+  color: var(--bubble-link);
+}
+
+/*
+ * 宽表格自己滚，不许把整条消息顶宽。
+ * 只画横线不画竖线：agent 的表多是「一行一条记录」，竖线只会把字切成格子。
+ */
+.md-tablewrap {
+  width: fit-content;
+  max-width: 100%;
+  margin: 2px 0 14px;
+  overflow-x: auto;
+  border-radius: var(--r-md);
+  box-shadow: inset 0 0 0 1px var(--bd-hairline);
+}
+
+.md table {
+  border-collapse: collapse;
+  font-size: 13.5px;
+}
+
+/*
+ * 单元格退回 break-word。正文的 `anywhere` 会把每个字符都算成可断点，
+ * 于是表格的最窄宽度塌成一个字宽，列一挤，「S5」这种编号就被拆成两行（实测）。
+ * break-word 不参与最窄宽度的计算：词保持完整，放不下就让外面那层横向滚。
+ */
+.md th,
+.md td {
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--bd-hairline);
+  text-align: left;
+  vertical-align: top;
+  overflow-wrap: break-word;
+}
+
+.md tr:last-child td {
+  border-bottom: 0;
+}
+
+.md th {
+  background: var(--bg-sunken);
+  color: var(--tx-secondary);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+/* ── 拖文件进来 ─────────────────────────────────────────────────────────── */
+
+/* 盖住整个对话区。pointer-events:none 不能省：覆盖层挡在上面的话，
+   dragleave 会在指针「进入覆盖层」时触发，于是它自己把自己关掉，再打开，来回闪 */
+.drop {
+  position: absolute;
+  inset: 10px;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  border: 2px dashed color-mix(in srgb, var(--accent) 55%, transparent);
+  border-radius: var(--r-lg);
+  background: color-mix(in srgb, var(--bg-page) 88%, var(--accent));
+  font-size: 14.5px;
+  font-weight: 600;
+  color: var(--tx-primary);
+  animation: drop-in var(--t-enter) var(--ease) both;
+}
+
+@keyframes drop-in {
+  from { opacity: 0; }
+}
+
+/* 文字前面一颗在拍的球：「扔进来」 */
+.drop span {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.drop span::before {
+  content: '';
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--accent);
+  transform-origin: 50% 100%;
+  animation: dribble 1s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+}
+
+/* ── 传球：发送时从发送键抛向状态栏的那颗（见 Conversation.tsx 的 tossToTurn）── */
+
+.toss-dot {
+  position: absolute;
+  left: 0;
+  top: 0;
+  z-index: 40;
+  width: 12px;
+  height: 12px;
+  margin: -6px 0 0 -6px;
+  border-radius: 50%;
+  background: var(--accent);
+  pointer-events: none;
+  will-change: transform;
+}
+
+/* ── 一段工具活动 ──────────────────────────────────────────────────────────
+ *
+ * 折起来的一段工具活动。**一行**，和 Claude 原生的 `Ran 7 commands ›` 同一个位置。
+ *
+ * 刻意做得比正文轻：灰字、小一号、无背景。它是过程不是内容——过程要能查，
+ * 但不该和正文抢注意力。
+ */
+.run {
+  margin: 2px 0 12px;
+}
+
+/*
+ * 悬停时的底色往左伸进页边 9px，**内容本身不缩进**：那句话的左缘和正文的左缘
+ * 对齐。owner 截图指出过双重缩进（「跑了 N 条命令」比正文往右缩了一截），
+ * 负外边距 + 等量内边距正好把它抵消掉。
+ *
+ * 折起来时前面不摆珠子（见 Conversation.tsx 的 RunBlock）：一段活动辄十几二十次
+ * 调用，一串珠子比后面那句话还长。
+ */
+.run-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: fit-content;
+  max-width: calc(100% + 9px);
+  margin-left: -9px;
+  padding: 5px 11px 5px 9px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--tx-tertiary);
+  font-family: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color var(--t-hover) var(--ease), color var(--t-hover) var(--ease);
+}
+
+.run-head:hover {
+  background: var(--bg-hover);
+  color: var(--tx-secondary);
+}
+
+.run-head:active {
+  background: var(--bg-press);
+}
+
+.run-sum {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.run-head .chev {
+  opacity: 0.7;
+}
+
+/*
+ * 展开：一次调用一颗珠子，串在一条细线上，每颗后面接着它那一次调用。
+ * 线画在珠子的圆心上（珠子宽 8，线在 3.25–4.75）；珠子自己带一圈纸色的底，
+ * 把线在它身后断开——于是空心那颗（读）看起来是一个圈，而不是被线穿过的圈。
+ */
+.run-body {
+  position: relative;
+  margin: 4px 0 8px;
+  animation: tool-open var(--t-enter) var(--ease) both;
+}
+
+/* 线用 --bd-strong 而不是 hairline：它要在一排珠子之间被读成「一条线」，
+   10% 的墨色在两颗珠子之间那 20px 里几乎看不出来（实测） */
+.run-body::before {
+  content: '';
+  position: absolute;
+  left: 3.25px;
+  top: 16px;
+  bottom: 16px;
+  width: 1.5px;
+  border-radius: 1px;
+  background: var(--bd-strong);
+}
+
+.run-body .bead {
+  position: relative;
+  box-shadow: 0 0 0 3px var(--bg-page);
+}
+
+.run-body .bead.is-read,
+.run-body .bead.is-ask,
+.run-body .bead.is-think {
+  background-color: var(--bg-page);
+}
+
+/*
+ * 时间线上的一段思考。思考现在算在这段活里面（runs.ts 的 group），不再自己占一行、
+ * 把一段活切成好几截——它在时间线上按先后排在工具之间，和工具行同一个几何：
+ * 「∴」正好落在那条线上，后面是第一句话，点开是全文。
+ */
+.think-step {
+  margin: 0 0 2px;
+}
+
+.think-step > summary {
+  display: flex;
+  width: calc(100% + 9px);
+  margin-left: -9px;
+  padding: 6px 10px 6px 9px;
+  gap: 10px;
+  border-radius: 10px;
+}
+
+/* 折角挪到行尾，和工具行一个位置 */
+.think-step > summary::before {
+  content: none;
+}
+
+.think-step > summary::after {
+  content: '';
+  flex: none;
+  width: 5px;
+  height: 5px;
+  margin-right: 2px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  opacity: 0.55;
+  transform: rotate(-45deg);
+  transition: transform var(--t-layout) var(--spring-soft);
+}
+
+.think-step[open] > summary::after {
+  transform: rotate(45deg) translate(-1px, -1px);
+}
+
+.think-label {
+  flex: none;
+  color: var(--tx-secondary);
+  font-weight: 600;
+}
+
+.think-peek {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.think-step > .md {
+  margin: 2px 0 8px 18px;
+}
+
+/* ── 工具 ───────────────────────────────────────────────────────────────── */
+
+.tool {
+  margin: 0 0 2px;
+}
+
+.tool-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: calc(100% + 9px);
+  margin-left: -9px;
+  padding: 6px 10px 6px 9px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--tx-secondary);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color var(--t-hover) var(--ease);
+}
+
+.tool-head.as-text {
+  cursor: default;
+}
+
+.tool-head:hover {
+  background: var(--bg-hover);
+}
+
+.tool-head.as-text:hover {
+  background: transparent;
+}
+
+.tool-head:active {
+  background: var(--bg-press);
+}
+
+.tool-head .chev {
+  opacity: 0.55;
+}
+
+.tool-name {
+  flex: none;
+  color: var(--tx-primary);
+  font-weight: 600;
+}
+
+/* 折叠时的一行预览。省略号让人知道"后面还有"，而不是"就这些" */
+.tool-peek {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--tx-tertiary);
+}
+
+/* 右端只放一个客观事实：还没结果（在跑）、失败了，或输出多大。
+   失败只认服务端给的标记（agent 自己记下的成败），不从输出里猜 */
+.tool-state {
+  flex: none;
+  margin-left: auto;
+  color: var(--tx-tertiary);
+  font-family: var(--font-sans);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.tool-state.is-live {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.tool-state.is-fail {
+  color: var(--tx-danger);
+  font-weight: 600;
+}
+
+/* 没有 state 的那一行，箭头自己靠右 */
+.tool-peek + .chev {
+  margin-left: auto;
+}
+
+/*
+ * 展开时让内容长出来，而不是凭空出现。
+ *
+ * **不做高度动画。** 工具输出实测能有几百行，animate 高度要么先量一遍
+ * （强制同步布局，每帧一次），要么用 grid-template-rows: 0fr→1fr（Chromium 上
+ * 对这种内容会掉帧）。位移 + 淡入拿到九成的效果，代价是零。
+ *
+ * 只给 -4px：它就在箭头下面展开，不需要「飞」。
+ *
+ * 展开的内容是**挂在工具名那一列下面的一张凹进去的卡片**，不连珠子一起包进去：
+ * 珠子留在时间线上，线才不会被卡片截断。
+ */
+.tool-detail {
+  margin: 2px 0 8px 18px;
+  padding: 10px 12px 12px;
+  border-radius: var(--r-md);
+  background: var(--bg-sunken);
+  animation: tool-open var(--t-enter) var(--ease) both;
+}
+
+@keyframes tool-open {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+
+/* 展开后给出的全路径。折叠行上那份是缩写的，而复制粘贴要的是全的 */
+.tool-path {
+  margin: 0 0 8px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--tx-tertiary);
+  word-break: break-all;
+}
+
+/* 配不上对的孤儿结果：不在任何一段活里，没有时间线，自己一行 */
+.tool.is-orphan .tool-head {
+  width: 100%;
+  margin-left: 0;
+  padding-left: 0;
+}
+
+/* 段与段之间。用 `* + *` 而不是列举标签：一段可能是 div（代码块）也可能是
+   p（单行标量），列举就会漏掉后来加的那种 */
+.payload + .payload,
+.payload > * + * {
+  margin-top: 10px;
+}
+
+.payload + .payload {
+  padding-top: 10px;
+  border-top: 1px solid var(--bd-hairline);
+}
+
+.payload-label {
+  margin-bottom: 5px;
+  font-family: var(--font-sans);
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--tx-tertiary);
+}
+
+/* 短标量：标题与值同一行 */
+.payload-inline {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 0;
+  font-size: 12.5px;
+}
+
+.payload-inline .payload-label {
+  flex: none;
+  margin-bottom: 0;
+}
+
+.payload-inline code {
+  min-width: 0;
+  font-family: var(--font-mono);
+  color: var(--tx-secondary);
+  overflow-wrap: anywhere;
+}
+
+.payload-body {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 9px;
+  background: var(--bg-page);
+  overflow: auto;
+  max-height: 380px;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.65;
+  color: var(--tx-secondary);
+  /* 命令与代码里长 URL、长路径极常见。不给它换行的机会，一条 200 字的 curl
+     就会把整块撑出横滚条，而它本来只需要折两行。`pre-wrap` 保住真换行，
+     `anywhere` 只在一行实在放不下时才断——这两条缺一不可。 */
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* Edit 的两侧。用左边一条竖线而不是整块底色：一次替换常常有几十行，
+   整块染色会盖过代码本身的可读性，而竖线在余光里同样认得出是哪一侧。 */
+.seg-del .payload-body,
+.seg-ins .payload-body {
+  border-left: 3px solid;
+  border-radius: 0 9px 9px 0;
+}
+
+.seg-del .payload-body {
+  border-left-color: var(--tx-danger);
+}
+
+.seg-ins .payload-body {
+  border-left-color: var(--tx-success);
+}
+
+.seg-del .payload-label {
+  color: var(--tx-danger);
+}
+
+.seg-ins .payload-label {
+  color: var(--tx-success);
+}
+
+/* 说明（Bash 的 description 之类）是给人读的句子，不是代码——
+   套等宽 + 代码底色会让人以为它也是命令的一部分 */
+.payload-note {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--tx-secondary);
+}
+
+.payload-cut {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 8px 0 0;
+  font-size: 11.5px;
+  color: var(--tx-tertiary);
+}
+
+.payload-cut.is-err {
+  color: var(--tx-danger);
+}
+
+.mini {
+  border: 0;
+  border-radius: 999px;
+  padding: 3px 11px;
+  background: var(--bg-page);
+  box-shadow: var(--lift-1);
+  color: var(--tx-primary);
+  font-family: inherit;
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color var(--t-hover) var(--ease), transform var(--t-press) var(--ease);
+}
+
+.mini:hover:not(:disabled) {
+  background: var(--bg-raised);
+}
+
+.mini:active:not(:disabled) {
+  transform: scale(0.96);
+}
+
+.mini:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/*
+ * 「这一轮被打断」。一条边界，不是一句话：居中、墨色第三档、两边各一段细线，
+ * 读起来像「这里断开了」，而不像谁说了点什么。
+ */
+.interrupt {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 4px 0 14px;
+  font-size: 12.5px;
+  color: var(--tx-tertiary);
+}
+
+.interrupt::before,
+.interrupt::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--bd-hairline);
+}
+
+.turn-err {
+  margin: 0 0 16px;
+  padding: 11px 14px;
+  border-radius: var(--r-md);
+  background: color-mix(in srgb, var(--tx-danger) 7%, var(--bg-page));
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: var(--tx-danger);
+}
+
+/* ── 输入区 ─────────────────────────────────────────────────────────────── */
+
+.composer {
+  position: relative;
+  flex: none;
+  /*
+    **浮在滚动区之上**，而不是占一格布局：滚动区要一直铺到窗口底，正文才淡得进
+    输入框后面去，而不是撞上一条硬边。
+
+    背景必须透明——底下是正在淡出的正文。真正不透明的是里面那些东西：
+    `.composer-box`（inputbox.css 给了 --bg-raised）、选择题卡、附件片。
+
+    顶上不留内边距：渐隐的消失线量的就是这个盒子的上沿（见 Conversation.tsx 的
+    Composer），留一截就是让消失线和输入框上沿之间空出一道缝。
+  */
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 0 clamp(18px, 3vw, 36px) max(12px, env(safe-area-inset-bottom));
+  background: transparent;
+}
+
+/*
+  回到最新。一颗圆钮、只有一个箭头，浮在输入区正上方的渐隐带里——那一截正文
+  已经淡下去了，钮压在上面不会和字抢。
+
+  原来是一颗带字的药丸「↓ 回到最新」，比这宽一倍多，正好压在还看得清的那行正文上
+  （owner 截图里就是它挡住了「两条都红。实现：」）。名字留在 aria-label 和 title 里。
+  Claude.ai、ChatGPT 的「回到底部」也都是这样一颗圆钮。
+*/
+.jump {
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 10px);
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: var(--bg-raised);
+  box-shadow: var(--lift-2);
+  color: var(--tx-secondary);
+  cursor: pointer;
+  transform: translateX(-50%);
+  animation: jump-in var(--t-layout) var(--spring-soft) both;
+  transition: color var(--t-hover) var(--ease);
+}
+
+@keyframes jump-in {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(6px) scale(0.9);
+  }
+}
+
+.jump:hover {
+  color: var(--tx-primary);
+}
+
+.jump:active {
+  transform: translateX(-50%) scale(0.94);
+}
+
+/* 向下的箭头：一根竖线加一个折角，和发送键那支是同一个画法倒过来 */
+.jump-arrow {
+  width: 12px;
+  height: 13px;
+  background: currentColor;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 11'%3E%3Cpath d='M5 1v8.5M1.5 6 5 9.5 8.5 6' fill='none' stroke='%23000' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 11'%3E%3Cpath d='M5 1v8.5M1.5 6 5 9.5 8.5 6' fill='none' stroke='%23000' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / contain no-repeat;
+}
+
+
+@keyframes pulse {
+  50% {
+    opacity: 0.35;
+    transform: scale(0.75);
+  }
+}
+
+/*
+  原来这里还有 .status（「运行中 Ns」那一行）、.stop、.queued、.composer-cfg。
+  2026-10-10 一起拿掉了：时间并进状态栏，停止并进发送键，排队条数并进状态栏，
+  配置条挪到输入框底下（样式在 inputbox.css 的 .pills）。见 Conversation.tsx 的 Composer 抬头。
+*/
+
+/* 分叉是次要动作，做成文字按钮而不是第二颗圆钮：
+   两颗一样的圆钮并排，人得先想一下哪颗是「发」 */
+.fork {
+  flex: none;
+  align-self: flex-end;
+  margin-bottom: 4px;
+  padding: 5px 10px;
+  border: 1px solid var(--bd-hairline);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--tx-secondary);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background-color var(--t-hover) var(--ease), transform var(--t-press) var(--ease);
+}
+
+.fork:hover:not(:disabled) {
+  background: var(--bg-hover);
+}
+
+.fork:active:not(:disabled) {
+  transform: scale(0.96);
+}
+
+.fork:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.composer-note {
+  max-width: var(--conv-w);
+  margin: 8px auto 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--tx-secondary);
+}
+
+.composer-err {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  max-width: var(--conv-w);
+  margin: 10px auto 0;
+  padding: 10px 14px;
+  border-radius: var(--r-md);
+  background: color-mix(in srgb, var(--tx-danger) 7%, var(--bg-page));
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--tx-danger);
+}
+
+.composer-err .dim {
+  color: var(--tx-secondary);
+}
+
+/*
+  头部那颗「文件」。幽灵按钮，和标题同一行右侧——它是「看这个会话的目录」，
+  和标题、工作目录是同一类信息，不该做得像个主动作。
+*/
+.conv-files {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin-left: auto;
+  padding: 6px 13px 6px 11px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--bg-sunken);
+  color: var(--tx-secondary);
+  font-family: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color var(--t-hover) var(--ease), color var(--t-hover) var(--ease),
+    transform var(--t-press) var(--ease);
+}
+
+/* 文件夹的轮廓，mask 画成 currentColor */
+.conv-files::before {
+  content: '';
+  width: 14px;
+  height: 12px;
+  background: currentColor;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 12'%3E%3Cpath d='M1.5 3V2.2c0-.4.3-.7.7-.7h3.2l1.4 1.5h5c.4 0 .7.3.7.7v6.6c0 .4-.3.7-.7.7H2.2c-.4 0-.7-.3-.7-.7V3z' fill='none' stroke='%23000' stroke-width='1.4' stroke-linejoin='round'/%3E%3C/svg%3E") center / contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 12'%3E%3Cpath d='M1.5 3V2.2c0-.4.3-.7.7-.7h3.2l1.4 1.5h5c.4 0 .7.3.7.7v6.6c0 .4-.3.7-.7.7H2.2c-.4 0-.7-.3-.7-.7V3z' fill='none' stroke='%23000' stroke-width='1.4' stroke-linejoin='round'/%3E%3C/svg%3E") center / contain no-repeat;
+}
+
+.conv-files:hover {
+  background: var(--bg-press);
+  color: var(--tx-primary);
+}
+
+.conv-files:active {
+  transform: scale(0.96);
+}
+
+/*
+  侧栏收起时，那颗「展开」把手是 position:absolute 浮在内容之上的
+  （.rail-peek，top 17 / left 16）。头部的左内边距最小只有 18px，于是标题被它
+  压住——owner 截图：「左侧展开按钮和会话标题重叠」。
+
+  让开一条道，而不是把把手挪走：它和展开态的收起按钮是**同一个位置**，挪了
+  收放来回切时按钮会跳。
+*/
+[data-rail='off'] .conv-head {
+  padding-left: 54px;
+}
+
+/*
+  agent 正文走衬线，和 App 端同一个设计（见 tokens.css 的 --font-serif）。
+  **只给 agent 的正文**：用户那句在气泡里、工具输出是等宽，它们不是"读物"。
+
+  行高比无衬线时略松：衬线字在屏幕上更需要呼吸，这也是 App 端那边的值。
+*/
+.msg-agent .md p,
+.msg-agent .md li,
+.msg-agent .md blockquote {
+  font-family: var(--font-serif);
+  font-size: 15.5px;
+  line-height: 1.72;
+}
+
+/* 标题跟着走，但不放大——它们已经有字号层级了 */
+.msg-agent .md h1,
+.msg-agent .md h2,
+.msg-agent .md h3 {
+  font-family: var(--font-serif);
+}
+
+/* 代码、表格保持无衬线/等宽：那是"要对齐看"的东西，不是要读的 */
+.msg-agent .md code,
+.msg-agent .md pre,
+.msg-agent .md table {
+  font-family: var(--font-mono);
+}
+
+/* 表格里是字不是代码，等宽只给代码格。上面那条把整张表都设成了等宽，这里退回来 */
+.msg-agent .md th,
+.msg-agent .md td {
+  font-family: var(--font-sans);
+}
+
+.msg-agent .md td code {
+  font-family: var(--font-mono);
+}
+
+/*
+  轮次状态行。**一轮只有一条，在整轮的最末尾**。
+
+  owner 截图指出来的病：原来每条 agent 正文后面都挂一个，于是那颗球夹在一轮
+  对话的中间，而且和「复制」同行。他要的是——球是**状态提示栏的开头标识**，
+  跑着的时候在这儿显示各种运行状态（开始、正在读写文件…），跑完了才静止下来
+  并给出动作。所以这一条同时承担两件事，靠状态切换，而不是两个组件各画一次。
+*/
+.turnbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  /*
+    **不要再加左右内边距**：外面的 .conv-inner 已经给了同一个
+    `clamp(18px, 3vw, 36px)`，再加一次就是双重缩进——owner 截图里那颗球和
+    「跑了 N 条命令」比正文往右缩了一截，就是这么来的。
+  */
+  padding: 10px 0 6px;
+  color: var(--tx-tertiary);
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+/*
+  球**永远是品牌色**，不跟着这一行的灰字走。
+
+  它用的是 currentColor，而这一行的 color 是 --tx-tertiary——所以上一版它是灰的
+  （owner：「logo 是灰色的」）。
+
+  运行与否**只用动静区分，不用颜色**（owner 明确要求）：跑着的时候转、速度线
+  一道道闪（shared.css 的 .ball-live）；停下来落地压扁一下，然后静止（.ball-land）。
+  颜色留给别的意思，不参与这件事。
+*/
+.turnbar-ball {
+  display: inline-flex;
+  flex: none;
+  color: var(--accent);
+}
+
+.turnbar.is-live .turnbar-what {
+  color: var(--tx-secondary);
+}
+
+.turnbar-what {
+  overflow: hidden;
+  flex: 1;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* 秒表本地每秒走一格；数字等宽，走起来不晃 */
+.turnbar-time {
+  font-variant-numeric: tabular-nums;
+  color: var(--tx-secondary);
+}
+
+/* 两个心跳都没等到 tick：停在那儿、变灰，不再往前数（见 TurnBar） */
+.turnbar-what.is-stale {
+  opacity: 0.5;
+}
+
+/* 复制：紧挨着球，不再推到整行最右端 */
+.turnbar-copy {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: -6px;
+  padding: 4px 7px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--tx-tertiary);
+  font-family: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: background-color var(--t-hover) var(--ease), color var(--t-hover) var(--ease),
+    transform var(--t-press) var(--ease);
+}
+
+.turnbar-copy:hover {
+  color: var(--tx-primary);
+  background: var(--bg-hover);
+}
+
+.turnbar-copy:active {
+  transform: scale(0.94);
+}
+
+.turnbar-copy.is-err {
+  color: var(--tx-danger);
+}
+
+.turnbar-said {
+  animation: said-in var(--t-enter) var(--ease) both;
+}
+
+@keyframes said-in {
+  from { opacity: 0; transform: translateX(-3px); }
+}
+
+/*
+  一轮的收尾：**两行**。
+
+  第一行是动作（复制），属于上面那条回复；第二行是状态（球 + 在干什么），
+  属于这一轮。两件事不同层，挤一行就分不清那颗球在说哪一条
+  （owner 说过两次：「logo 是放在复制行下面一行的」）。
+*/
+.turnfoot {
+  margin: 0 0 12px;
+}
+
+.turnfoot-acts {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* 页头最右边的「…」（会话操作菜单）。紧跟「文件」；没有「文件」时自己顶到最右 */
+.conv-more {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  margin-left: 6px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--tx-secondary);
+  cursor: pointer;
+  transition: background-color var(--t-hover) var(--ease), color var(--t-hover) var(--ease);
+}
+
+.conv-id + .conv-more {
+  margin-left: auto;
+}
+
+.conv-more:hover,
+.conv-more[aria-expanded='true'] {
+  background: var(--bg-sunken);
+  color: var(--tx-primary);
+}
+
+/* 上一轮没跑成（Conversation.tsx 的 onTurn）。挂在输入区，和选择题卡同一个位置 */
+.turnfail {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  max-width: var(--conv-w);
+  margin: 0 auto 10px;
+  padding: 12px 14px;
+  border-radius: var(--r-md);
+  background: color-mix(in srgb, var(--tx-danger) 8%, var(--bg-raised));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--tx-danger) 22%, transparent);
+  animation: rise var(--t-enter) var(--ease) both;
+}
+
+.turnfail-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  margin-top: 6px;
+  border-radius: 50%;
+  background: var(--tx-danger);
+}
+
+.turnfail-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--tx-secondary);
+}
+
+.turnfail-text strong {
+  color: var(--tx-danger);
+  font-weight: 700;
+}
+
+/* 交给了 Codex App：不是失败，换成球色 */
+.turnfail.is-info {
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 25%, transparent);
+}
+
+.turnfail.is-info .turnfail-dot {
+  background: var(--accent);
+}
+
+.turnfail.is-info .turnfail-text strong {
+  color: var(--accent);
+}
+
+.turnfail-quote {
+  overflow: hidden;
+  color: var(--tx-tertiary);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.turnfail-acts {
+  flex: none;
+  display: flex;
+  gap: 6px;
+}
+
+.turnfail-btn {
+  padding: 6px 12px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--bg-sunken);
+  color: var(--tx-primary);
+  font-family: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.turnfail-btn:hover {
+  background: var(--bg-press);
+}
+
+.turnfail-btn.is-primary {
+  background: var(--bg-inverse);
+  color: var(--tx-inverse);
+}
+
+@media (max-width: 560px) {
+  .turnfail {
+    flex-wrap: wrap;
+  }
+
+  .turnfail-acts {
+    width: 100%;
+    justify-content: flex-end;
+  }
+}
+
+/* ── 斜杠命令的回执、/goal 的进度（2026-11-10） ─────────────────────────── */
+
+/* 回执不是谁说的话：短的一行小字，长的（/context 那张表）折起来 */
+.cmdout {
+  margin: 0 0 14px;
+  font-size: 12.5px;
+  color: var(--tx-tertiary);
+}
+
+.cmdout.is-line {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.cmdout > summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: -8px;
+  padding: 3px 11px 3px 8px;
+  border-radius: 999px;
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+}
+
+.cmdout > summary::-webkit-details-marker { display: none; }
+.cmdout > summary::before { content: '›'; font-size: 13px; transition: transform 0.15s; }
+.cmdout[open] > summary::before { transform: rotate(90deg); }
+.cmdout > summary:hover { background: var(--bg-hover); color: var(--tx-secondary); }
+
+.cmdout[open] {
+  color: var(--tx-secondary);
+}
+
+/* /goal 的进度：一条边界，不是气泡。达成用绿色对勾；没达成是「接着干」，不报警 */
+.goalrow {
+  display: flex;
+  gap: 10px;
+  margin: 2px 0 16px;
+  padding: 10px 12px;
+  border: 1px solid var(--bd-hairline);
+  border-radius: var(--r-md);
+  font-size: 13px;
+  color: var(--tx-secondary);
+}
+
+.goalrow-mark {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  font-size: 11px;
+  background: var(--bg-hover);
+  color: var(--tx-tertiary);
+}
+
+.goalrow.is-met .goalrow-mark {
+  background: color-mix(in srgb, var(--tx-success) 14%, transparent);
+  color: var(--tx-success);
+}
+
+.goalrow-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.goalrow-text strong { font-weight: 600; color: var(--tx-primary); }
+.goalrow-cond { overflow-wrap: anywhere; }
+.goalrow-why { color: var(--tx-tertiary); font-size: 12.5px; overflow-wrap: anywhere; }
+
+/* ── 排着的消息（2026-11-14）：一条一行，带「插队 / 撤回」 ───────────────── */
+
+.qlist {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-width: var(--conv-w);
+  margin: 0 auto 8px;
+  padding: 6px;
+  border: 1px solid var(--bd-hairline);
+  border-radius: var(--r-md);
+  background: var(--bg-raised);
+}
+
+.qrow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 4px 4px 4px 8px;
+  font-size: 13px;
+}
+
+.qrow-tag {
+  flex: none;
+  font-size: 11.5px;
+  color: var(--tx-tertiary);
+}
+
+.qrow-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--tx-primary);
+}
+
+.qrow-btn {
+  flex: none;
+  padding: 4px 11px;
+  border: 1px solid var(--bd-hairline);
+  border-radius: 999px;
+  background: var(--bg-page);
+  color: var(--tx-secondary);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.qrow-btn:hover { background: var(--bg-hover); color: var(--tx-primary); }
+.qrow-btn.is-quiet { border-color: transparent; background: transparent; color: var(--tx-tertiary); }

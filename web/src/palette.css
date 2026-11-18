@@ -1,0 +1,217 @@
+/*
+  命令面板（Palette.tsx）。遮罩沿用 modal.css 的 .dlg-scrim，卡片贴在上三分之一处而不是正中：
+  输入框是这块东西的主角，结果往下长——放正中的话结果一多，输入框就被顶着往上跳。
+*/
+
+.pal-scrim {
+  align-items: flex-start;
+  padding-top: min(14vh, 120px);
+}
+
+.pal {
+  display: flex;
+  flex-direction: column;
+  width: min(640px, 100%);
+  max-height: min(70vh, 600px);
+  border-radius: var(--r-lg);
+  background: var(--bg-raised);
+  box-shadow: var(--lift-3);
+  overflow: hidden;
+  animation: dlg-in var(--t-layout) var(--spring-soft) both;
+}
+
+.pal-top {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px 12px 16px;
+  border-bottom: 1px solid var(--bd-hairline);
+}
+
+/* 放大镜：和侧栏「搜索…」那颗同一个图形 */
+.pal-glass {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  background: var(--tx-tertiary);
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='7' cy='7' r='4.6' fill='none' stroke='%23000' stroke-width='1.6'/%3E%3Cpath d='M10.4 10.4 14 14' stroke='%23000' stroke-width='1.6' stroke-linecap='round'/%3E%3C/svg%3E") center / contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='7' cy='7' r='4.6' fill='none' stroke='%23000' stroke-width='1.6'/%3E%3Cpath d='M10.4 10.4 14 14' stroke='%23000' stroke-width='1.6' stroke-linecap='round'/%3E%3C/svg%3E") center / contain no-repeat;
+}
+
+.pal-input {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 0;
+  border: 0;
+  background: transparent;
+  color: var(--tx-primary);
+  font-family: inherit;
+  font-size: 16px;
+  caret-color: var(--accent);
+}
+
+.pal-input:focus {
+  outline: none;
+}
+
+.pal-input::placeholder {
+  color: var(--tx-tertiary);
+}
+
+.pal-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 6px;
+}
+
+.pal-sec + .pal-sec {
+  margin-top: 6px;
+}
+
+.pal-sec-title {
+  margin: 6px 10px 4px;
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--tx-tertiary);
+}
+
+.pal-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--tx-primary);
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.pal-item.is-active {
+  background: var(--accent-soft);
+}
+
+.pal-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.pal-label {
+  overflow: hidden;
+  font-size: 13.5px;
+  line-height: 1.4;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.pal-sub {
+  overflow: hidden;
+  font-size: 11.5px;
+  color: var(--tx-tertiary);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* 会话前面的小点：和侧栏的 .rdot 同一套含义——在跑是球色，等你是实心的警示色 */
+.pal-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  margin: 0 3px;
+  border-radius: 50%;
+  background: var(--bd-strong);
+}
+
+.pal-dot.is-running {
+  background: var(--accent);
+}
+
+.pal-dot.is-waiting {
+  background: var(--tx-warning);
+}
+
+.pal-cmd {
+  flex: none;
+  width: 13px;
+  color: var(--tx-tertiary);
+  font-size: 15px;
+  text-align: center;
+}
+
+.pal-empty {
+  margin: 0;
+  padding: 18px 12px;
+  font-size: 13px;
+  color: var(--tx-tertiary);
+}
+
+.pal-foot {
+  flex: none;
+  display: flex;
+  gap: 16px;
+  padding: 8px 16px;
+  border-top: 1px solid var(--bd-hairline);
+  background: var(--bg-sunken);
+  font-size: 11.5px;
+  color: var(--tx-tertiary);
+}
+
+.pal-foot span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* ── 快捷键表 ── */
+
+.keys-dlg {
+  width: min(520px, 100%);
+}
+
+.keys {
+  padding: 8px 20px 18px;
+}
+
+.keys-sec + .keys-sec {
+  margin-top: 14px;
+}
+
+.keys-title {
+  margin: 8px 0 4px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--tx-tertiary);
+}
+
+.keys-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--bd-hairline);
+  font-size: 13.5px;
+  color: var(--tx-primary);
+}
+
+.keys-row:last-child {
+  border-bottom: 0;
+}
+
+@media (max-width: 560px) {
+  .pal-scrim {
+    padding: 12px;
+  }
+
+  .pal-foot {
+    display: none;
+  }
+}

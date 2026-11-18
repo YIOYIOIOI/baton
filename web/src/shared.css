@@ -1,0 +1,297 @@
+/*
+ * 跨页共用的小原语。
+ *
+ * 它们本来散在各自的页面样式里，靠"反正打包成一张表"隐式生效——
+ * `.chev` 定义在 conversation.css 却被侧栏用，`.seg`（已删）定义在 workspace.css
+ * 却被新建页用。能跑，但读代码的人找不到，改的人也不知道自己在动谁。
+ *
+ * 这个文件出现的直接原因是一次真的 bug：首屏的会话示意和对话页都用了 `.tool`，
+ * 前者的 `display: flex` 泄漏到后者身上，把展开的工具输出撑出 1546px，
+ * 整个对话区多出一条横向滚动条（浏览器实测）。**全局类名是有代价的**——
+ * 页面专属的收进各自的作用域，真共用的放这里。
+ */
+
+/* 只给读屏看的文字。字标把「o」画成了一颗球，读屏得知道它念 Baton */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/*
+ * 折叠箭头。侧栏的分组、对话页的工具块、两颗药丸共用。
+ *
+ * 两条 1.5px 的边拼成的折角，不是实心三角：实心三角在 12px 的字旁边是整行
+ * 最黑的一个点，眼睛会先落到它身上；折角的分量和旁边的字一样重。
+ * 收起时朝右（-45°），展开朝下（45°），转的还是那 90°。
+ */
+.chev {
+  flex: none;
+  align-self: center;
+  width: 6px;
+  height: 6px;
+  margin: 0 2px 0 1px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  border-radius: 0 0 1px 0;
+  transform: rotate(-45deg);
+  transition: transform var(--t-layout) var(--spring-soft);
+}
+
+.chev.is-open {
+  transform: rotate(45deg) translate(-1px, -1px);
+}
+
+/* ── 字标 ─────────────────────────────────────────────────────────────────
+ *
+ * 小写 baton，「o」是那颗球。设计包里的字标本来就是小写（.design/01-welcome.png），
+ * 而球是这个产品唯一的标识——让它直接坐进名字里，比在名字旁边再摆一个图标
+ * 更省地方，也更像它自己。
+ *
+ * 球的直径取 0.54em：约等于这几个无衬线体的 x 高度再加一点点下沉，
+ * 看起来和旁边的 a 一样高。inline-block 没有内容时以下边缘对基线，
+ * 所以它天然坐在基线上，不需要 vertical-align 去凑。
+ */
+.wm {
+  display: inline-flex;
+  align-items: baseline;
+  font-family: var(--font-display);
+  font-weight: 700;
+  letter-spacing: -0.035em;
+  line-height: 1;
+  color: var(--tx-primary);
+}
+
+.wm-o {
+  display: inline-block;
+  width: 0.54em;
+  height: 0.54em;
+  margin: 0 0.035em 0 0.05em;
+  border-radius: 50%;
+  background: var(--accent);
+  transform-origin: 50% 100%;
+}
+
+/* 悬停在字标上时，那颗球轻轻弹一下——它是整个产品里唯一会动的东西 */
+a:hover .wm-o {
+  animation: wm-hop 520ms var(--ease) both;
+}
+
+@keyframes wm-hop {
+  0% { transform: translateY(0) scale(1, 1); }
+  18% { transform: translateY(0) scale(1.14, 0.86); }
+  48% { transform: translateY(-0.32em) scale(0.94, 1.06); }
+  78% { transform: translateY(0) scale(1.1, 0.9); }
+  100% { transform: translateY(0) scale(1, 1); }
+}
+
+/* ── 在跑的球 ─────────────────────────────────────────────────────────────
+ *
+ * Ball.tsx 那颗带放射短线的球，跑着的时候转起来，短线一道接一道地闪——
+ * 像漫画里表示「在动」的速度线。运行与否**只用动静区分，不用颜色**
+ * （owner 明确要求）：停下来它就是一颗静止的球，颜色不变。
+ */
+.ball-live svg {
+  animation: ball-spin 2.4s linear infinite;
+}
+
+.ball-live svg g path {
+  animation: ray-flick 1.2s ease-in-out infinite;
+}
+
+.ball-live svg g path:nth-child(2) { animation-delay: -0.24s; }
+.ball-live svg g path:nth-child(3) { animation-delay: -0.48s; }
+.ball-live svg g path:nth-child(4) { animation-delay: -0.72s; }
+.ball-live svg g path:nth-child(5) { animation-delay: -0.96s; }
+
+@keyframes ball-spin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes ray-flick {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.25; }
+}
+
+/*
+ * 刚停下来的那一下：球落地、压扁、弹回原样。**只放一次**——
+ * 它说的是「这一轮刚结束」，不是一个常驻的状态。
+ */
+.ball-land svg {
+  transform-origin: 50% 80%;
+  animation: ball-land 640ms var(--ease) both;
+}
+
+@keyframes ball-land {
+  0% { transform: translateY(-5px) scale(0.92, 1.08); }
+  38% { transform: translateY(0) scale(1.18, 0.82); }
+  62% { transform: translateY(-1.5px) scale(0.96, 1.04); }
+  100% { transform: none; }
+}
+
+/*
+ * 原地拍球。侧栏里在跑的那几行、首页「在跑」那一段都用它：
+ * 落地压扁、弹起拉长，一秒一下。挂它的元素要自己给 transform-origin: 50% 100%，
+ * 否则压扁是朝中心缩，看着像在抖而不是在落地。
+ */
+@keyframes dribble {
+  0%, 100% { transform: translateY(0) scale(1.2, 0.8); }
+  14% { transform: translateY(-1px) scale(0.92, 1.1); }
+  50% { transform: translateY(-4px) scale(1, 1); }
+  86% { transform: translateY(-1px) scale(0.94, 1.08); }
+}
+
+/* ── 工具珠子 ─────────────────────────────────────────────────────────────
+ *
+ * 一次工具调用一颗，**形状说是哪一类**：
+ *   ○ 读      空心——只是看了一眼，什么都没动
+ *   ◆ 改 / 写 实心菱形，颜色也深一档——这是会留下痕迹的那种
+ *   ▸ 命令    三角——跑了点什么
+ *   ◎ 提问    圈里一个点——停下来问你
+ *   · 其他    小圆点
+ * 还没结果的那颗是蓝的、在呼吸——它就是「此刻正在做」的那一步。
+ *
+ * 它们只出现在**展开后**的时间线上，一行一颗，串在那条细线上。折叠行上原来也
+ * 排着一串，2026-10-10 拿掉了——一段活动辄十几二十次调用，横着堆起来比那句话
+ * 还长（owner：「这些堆叠起来很难看」）。首页的会话示意里也是一行一颗。
+ */
+.bead {
+  flex: none;
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  color: var(--tx-tertiary);
+}
+
+.bead.is-read {
+  border: 1.5px solid currentColor;
+  border-radius: 50%;
+}
+
+.bead.is-edit,
+.bead.is-write {
+  width: 7px;
+  height: 7px;
+  margin: 0.5px;
+  border-radius: 1.5px;
+  background: currentColor;
+  color: var(--tx-secondary);
+  transform: rotate(45deg);
+}
+
+.bead.is-shell {
+  background: currentColor;
+  clip-path: polygon(14% 4%, 96% 50%, 14% 96%);
+}
+
+.bead.is-ask {
+  border: 1.5px solid currentColor;
+  border-radius: 50%;
+  background: radial-gradient(circle, currentColor 0 1.4px, transparent 1.9px);
+}
+
+.bead.is-other {
+  width: 6px;
+  height: 6px;
+  margin: 1px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+/*
+ * 思考不是工具调用，但展开后它在时间线上和调用一样占一格，
+ * 标记是「∴」——Claude Code 的 TUI 里思考就是这个符号。
+ */
+.bead.is-think {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-serif);
+  font-size: 12px;
+  font-style: normal;
+  line-height: 1;
+  color: var(--tx-tertiary);
+}
+
+.bead.is-live {
+  color: var(--accent);
+  animation: bead-breathe 1.4s ease-in-out infinite;
+}
+
+.bead.is-edit.is-live,
+.bead.is-write.is-live {
+  animation-name: bead-breathe-diamond;
+}
+
+@keyframes bead-breathe {
+  50% { opacity: 0.4; transform: scale(0.8); }
+}
+
+@keyframes bead-breathe-diamond {
+  0%, 100% { transform: rotate(45deg); }
+  50% { opacity: 0.4; transform: rotate(45deg) scale(0.8); }
+}
+
+/* ── 正在读 ───────────────────────────────────────────────────────────────
+ *
+ * 等待时那颗球在原地拍。**只在真的在等的时候出现**，东西一回来它就不在了——
+ * 所以它不是装饰，是「还没好」这件事本身。
+ *
+ * 落地那一下压扁（scale 1.2 × 0.8）、腾空时拉长：没有这层形变，
+ * 它读起来是一个在上下平移的圆点，而不是一颗有重量的球。
+ */
+.bounce {
+  position: relative;
+  display: inline-block;
+  width: 12px;
+  height: 22px;
+  vertical-align: middle;
+}
+
+.bounce::before {
+  content: '';
+  position: absolute;
+  left: 1px;
+  bottom: 2px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--accent);
+  transform-origin: 50% 100%;
+  animation: bounce-ball 880ms cubic-bezier(0.45, 0, 0.55, 1) infinite;
+}
+
+/* 地上那块影子：球越高它越小越淡 */
+.bounce::after {
+  content: '';
+  position: absolute;
+  left: 1px;
+  bottom: 0;
+  width: 10px;
+  height: 3px;
+  border-radius: 50%;
+  background: var(--tx-primary);
+  opacity: 0.16;
+  animation: bounce-shadow 880ms cubic-bezier(0.45, 0, 0.55, 1) infinite;
+}
+
+@keyframes bounce-ball {
+  0%, 100% { transform: translateY(0) scale(1.22, 0.78); }
+  12% { transform: translateY(-2px) scale(0.92, 1.1); }
+  50% { transform: translateY(-11px) scale(1, 1); }
+  88% { transform: translateY(-2px) scale(0.94, 1.08); }
+}
+
+@keyframes bounce-shadow {
+  0%, 100% { transform: scale(1.1); opacity: 0.2; }
+  50% { transform: scale(0.55); opacity: 0.07; }
+}
+
+/* 分段控件（.seg）2026-11-06 随侧栏改版删除：它唯一的使用者是侧栏顶上的 agent 筛选，
+   现在收进了列表头的菜单（Shell.tsx）。设置页的分段选择是 settings.css 的 .set-choice */

@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Baton</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div id="banner" role="status" hidden></div>
+
+  <main id="shell">
+    <section id="pair" hidden>
+      <h1 class="mast">Baton</h1>
+      <p class="lede">在电脑终端查看 Baton 打印的配对码，10 分钟内有效。</p>
+      <form id="pair-form" autocomplete="off">
+        <input id="pair-code" inputmode="latin" autocapitalize="characters"
+               spellcheck="false" maxlength="12" placeholder="12 位配对码" required
+               aria-label="配对码">
+        <button type="submit">配对</button>
+      </form>
+      <p id="pair-error" class="error" hidden></p>
+    </section>
+
+    <section id="list" hidden>
+      <header class="bar">
+        <h1 class="mast">Baton</h1>
+        <span id="count" class="count"></span>
+        <button id="new-toggle" type="button" class="ghost">新建</button>
+        <button id="refresh" type="button" class="ghost">刷新</button>
+      </header>
+
+      <form id="new-form" class="new-form" hidden>
+        <div class="new-row">
+          <select id="new-agent" aria-label="agent">
+            <option value="claude">Claude</option>
+            <option value="codex">Codex</option>
+            <option value="antigravity">Antigravity</option>
+          </select>
+          <!-- 目录选项从现有会话推导，不自由输入：agent 会在这里执行代码 -->
+          <select id="new-cwd" aria-label="工作目录"></select>
+        </div>
+        <textarea id="new-msg" rows="2" placeholder="第一句话…" aria-label="第一句话"></textarea>
+        <div class="new-actions">
+          <button id="new-cancel" type="button" class="ghost">取消</button>
+          <button id="new-submit" type="submit">新建会话</button>
+        </div>
+        <p id="new-hint" class="hint" hidden></p>
+      </form>
+
+      <ul id="chains" class="chains"></ul>
+    </section>
+
+    <section id="convo" hidden>
+      <header class="bar">
+        <button id="back" type="button" class="ghost">返回</button>
+        <h1 id="convo-title" class="convo-title"></h1>
+      </header>
+      <div class="status-row">
+        <p id="convo-status" class="status" hidden></p>
+        <button id="stop" type="button" class="ghost danger" hidden>停止这一轮</button>
+      </div>
+      <button id="load-earlier" type="button" class="earlier" hidden>加载更早</button>
+      <ol id="events" class="events"></ol>
+
+      <form id="composer" class="composer">
+        <!-- 提示必须在 sticky 区域内部：放在外面会被推到文档底部，用户根本看不到 -->
+        <p id="composer-hint" class="hint" hidden></p>
+        <div class="composer-row">
+          <textarea id="msg" rows="2" placeholder="发消息继续这个会话…" aria-label="消息"></textarea>
+          <div class="composer-actions">
+            <button id="fork" type="button" class="ghost"
+                    title="从当前末尾分叉出一个新会话，原会话不受影响">分叉</button>
+            <button id="send" type="submit">发送</button>
+          </div>
+        </div>
+      </form>
+    </section>
+  </main>
+
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

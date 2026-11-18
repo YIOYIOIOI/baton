@@ -1,0 +1,321 @@
+/*
+ * 会话配置：输入框上方那条摘要 + 它打开的浮窗。
+ *
+ * 卡片**不透明**。半透明磨砂在这里没有收益：底下是一段会滚动的对话，
+ * 透出来的字会和浮窗里的选项叠在一起，两边都读不了。
+ */
+
+/*
+ * 只管定位。**宽度与外边距交给用它的那一页**——会话页把它当一条通栏摘要，
+ * 新建页把它当药丸排里的一颗，两种几何不一样，写死在这里就会有一边是错的。
+ */
+.cfg {
+  position: relative;
+}
+
+/* ── 摘要条 ─────────────────────────────────────────────────────────────── */
+
+.cfg-bar {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  max-width: 100%;
+  padding: 4px 10px 4px 5px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--tx-tertiary);
+  font-family: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background-color var(--t-hover) var(--ease), color var(--t-hover) var(--ease),
+    transform var(--t-press) var(--ease);
+}
+
+.cfg-bar:hover,
+.cfg-bar.is-open {
+  background: var(--bg-hover);
+  color: var(--tx-secondary);
+}
+
+.cfg-bar:active {
+  transform: scale(0.97);
+}
+
+/* agent 名是这一条的主语：一枚小牌子，后面几项是它的修饰 */
+.cfg-agent {
+  flex: none;
+  padding: 0 7px;
+  border-radius: 999px;
+  background: var(--bg-sunken);
+  color: var(--tx-secondary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 18px;
+}
+
+/*
+ * 项与项之间一道短竖线。用 ::before 而不是在 JSX 里插字符：
+ * 某一项缺席时（没选强度）不会留下一根孤零零的线。
+ */
+.cfg-item::before {
+  content: '';
+  display: inline-block;
+  width: 1px;
+  height: 9px;
+  margin-right: 7px;
+  vertical-align: -1px;
+  background: var(--bd-strong);
+}
+
+.cfg-item {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* bypass 在摘要里要看得见——它是这条里唯一会让人后悔的设置 */
+.cfg-item.is-danger {
+  color: var(--tx-danger);
+  font-weight: 600;
+}
+
+.cfg-bar .chev {
+  margin-left: 1px;
+}
+
+/* ── 浮窗 ───────────────────────────────────────────────────────────────── */
+
+/*
+ * 原来是贴着摘要条弹出的下拉（.cfg-panel），方向随页面而变、高度封在半屏，
+ * 2026-11-04 owner 要求改成浮窗。外壳在 modal.css，这里只管里面怎么排。
+ *
+ * 宽屏两栏：左「用什么」（agent、模型），右「怎么跑」（强度、权限）。模型列表是
+ * 最长的那一栏，单栏时它把权限档位推到要滚两屏才看得见。
+ */
+.cfg-dlg {
+  width: min(760px, 100%);
+}
+
+.cfg-cols {
+  display: grid;
+  grid-template-columns: 1fr;
+  padding: 8px;
+}
+
+@media (min-width: 720px) {
+  .cfg-cols {
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+
+  /* 两栏之间一道竖线，代替上下叠放时组与组之间的横线 */
+  .cfg-col + .cfg-col {
+    padding-left: 8px;
+    border-left: 1px solid var(--bd-hairline);
+  }
+}
+
+.cfg-col {
+  min-width: 0;
+}
+
+/* 窄屏叠起来时，第二栏的第一组也要和上面隔开 */
+@media (max-width: 719px) {
+  .cfg-col + .cfg-col > .cfg-group:first-child {
+    margin-top: 4px;
+    padding-top: 12px;
+    border-top: 1px solid var(--bd-hairline);
+  }
+}
+
+.cfg-foot-note {
+  flex: 1;
+  font-size: 12px;
+  color: var(--tx-tertiary);
+}
+
+.cfg-group {
+  padding: 8px 6px 6px;
+}
+
+.cfg-group + .cfg-group {
+  margin-top: 4px;
+  padding-top: 12px;
+  border-top: 1px solid var(--bd-hairline);
+}
+
+.cfg-title {
+  margin: 0 0 0 4px;
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--tx-primary);
+}
+
+.cfg-hint {
+  margin: 2px 0 0 4px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--tx-tertiary);
+}
+
+.cfg-rows {
+  margin-top: 6px;
+}
+
+.cfg-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 8px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color var(--t-hover) var(--ease);
+}
+
+.cfg-row:hover:not(:disabled) {
+  background: var(--bg-hover);
+}
+
+/* 按下就有反应。列表行不缩放——一行缩一下会把整列的基线带着抖，
+   压深一档底色是同样明确的「收到了」，而且不动版面 */
+.cfg-row:active:not(:disabled) {
+  background: var(--bg-press);
+}
+
+/* 选中那行底上一片极淡的蓝：勾是球的颜色，底是它投下的影子 */
+.cfg-row.is-on {
+  background: var(--accent-soft);
+}
+
+.cfg-row:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+/*
+ * 勾位固定占宽，不管有没有勾——否则选中的那行会比别人往右挪一格。
+ * 没勾的时候是一个空圈，勾上变成实心的球：选中 = 球在这儿。
+ */
+.cfg-tick {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  margin-top: 1px;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 1.5px var(--bd-strong);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  transition: background-color var(--t-hover) var(--ease), box-shadow var(--t-hover) var(--ease);
+}
+
+.cfg-row.is-on .cfg-tick {
+  background: var(--accent);
+  box-shadow: none;
+  animation: tick-pop 420ms var(--spring-bouncy) both;
+}
+
+@keyframes tick-pop {
+  from { transform: scale(0.5); }
+}
+
+.cfg-text {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.cfg-label {
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--tx-primary);
+}
+
+.cfg-row.is-on .cfg-label {
+  font-weight: 600;
+}
+
+.cfg-row.is-danger .cfg-label {
+  color: var(--tx-danger);
+}
+
+.cfg-desc {
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--tx-tertiary);
+}
+
+/* 「这台机器上用不了」的原因要比普通说明更显眼——它是在拦一个会挂住的操作 */
+.cfg-desc.is-blocked {
+  color: var(--tx-danger);
+}
+
+.cfg-more {
+  margin-left: 24px;
+  padding: 5px 8px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--tx-secondary);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  text-decoration: underline;
+  text-decoration-color: var(--bd-strong);
+  text-underline-offset: 3px;
+  cursor: pointer;
+  transition: background-color var(--t-hover) var(--ease), color var(--t-hover) var(--ease);
+}
+
+.cfg-more:hover {
+  background: var(--bg-hover);
+  color: var(--tx-primary);
+}
+
+.cfg-note,
+.cfg-err {
+  margin: 12px 14px 0;
+  padding: 9px 11px;
+  border-radius: 10px;
+  font-size: 11.5px;
+  line-height: 1.55;
+}
+
+.cfg-note {
+  background: var(--bg-sunken);
+  color: var(--tx-secondary);
+}
+
+.cfg-err {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  background: color-mix(in srgb, var(--tx-danger) 7%, var(--bg-raised));
+  color: var(--tx-danger);
+}
+
+.cfg-err .dim {
+  color: var(--tx-secondary);
+}
+
+/*
+  手指来点的时候，配置条自己撑到 44：它只有 25px 高，作为一个真要用手指点的东西太薄了。
+  原来写在 conversation.css，只管会话页；现在它在两页都挂在输入框底下，归到这里。
+  它和输入框之间拉开多少写在 inputbox.css 的 .pills。
+*/
+@media (pointer: coarse) {
+  .cfg-bar {
+    min-height: 44px;
+  }
+}

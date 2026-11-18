@@ -1,0 +1,67 @@
+# Dependencies
+node_modules/
+
+# Credentials and local configuration overrides (never commit)
+.env
+.env.*
+*.pem
+*-credentials.json
+credentials.json
+*.keystore
+*.p8
+*.p12
+*.jks
+*.key
+*.mobileprovision
+google-services.json
+GoogleService-Info.plist
+.cloudflared/
+
+# Baton runtime state (lives in ~/.baton outside the repository)
+.baton/
+/token
+/principals.json
+/revoked.json
+/devices.json
+/prefs.json
+/pairing-qr.svg
+/ask/
+/asks/
+/queue/
+/antigravity-bridges/
+/archive/
+probe-settings-*.json
+*.tmp
+runs/
+intents/
+*.log
+
+# Local IDE, editor, and prototype folders
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+.claude/
+.design/
+
+# Prebuilt frontend bundles (compiled into web/dist and app/dist on build/release)
+app/dist/
+web/dist/
+
+# VAPID Web Push keys and subscriptions
+push.json
+
+# Local browser QA artifacts
+.playwright-cli/
+output/playwright/
+
+# Temporary pairing artifacts
+expo-*-qr.html
+expo-*-qr.svg
+
+# Private maintainer notes
+CLAUDE.local.md
+docs/ops/*.local.md
+
+# TypeScript incremental build cache
+*.tsbuildinfo

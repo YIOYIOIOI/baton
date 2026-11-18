@@ -1,0 +1,26 @@
+{
+  // 服务端的类型检查：直接检查 JS（checkJs），不改写成 TS——后端「零构建」这条性质不变，
+  // node 跑的还是这些 .js。类型靠 JSDoc 补。
+  //
+  // 不查的：
+  //   src/web/**  浏览器里跑的 v1 老界面，要 DOM 类型，而且只在两份 dist 都没有时才用得上
+  //   test/**     测试里到处是按需拼的假对象，硬查只会逼着给假对象写类型
+  //
+  // 没开 strict：在一个原本没有类型的代码库上一次开全，报出来的大多是 null 检查的噪声。
+  // 先把「调用对不上签名、属性名写错、JSDoc 写坏」这一层守住。
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": true,
+    "noEmit": true,
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "target": "es2024",
+    "lib": ["es2024"],
+    "types": ["node"],
+    "strict": false,
+    "skipLibCheck": true,
+    "resolveJsonModule": true
+  },
+  "include": ["src/**/*.js", "scripts/**/*.mjs"],
+  "exclude": ["src/web/**", "node_modules"]
+}

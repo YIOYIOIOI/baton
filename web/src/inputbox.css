@@ -1,0 +1,346 @@
+/*
+ * 输入框本体的样式，跟着 InputBox 组件走。
+ *
+ * **从 conversation.css 里搬出来的。** 原来它只服务会话页，所以住在那儿是对的；
+ * 现在新建页也用同一个控件，再放在会话页的样式表里就成了「A 页的样式表在给
+ * B 页定规矩」——那正是上一轮踩过的坑（首屏的 `.tool` 泄漏进对话页，把工具输出
+ * 撑到 1546px）。组件自己带样式，用它的页面只管外围。
+ *
+ * 780 这个宽度留在这里：它是输入框自己的可读宽度，和会话正文同一个数，
+ * 两边都该是它。
+ */
+
+/*
+ * 输入框**底下**那排药丸：会话页是配置条，新建页是配置和工作目录。
+ *
+ * 原来在上面。上面那一截正文还看得见，一行没有底色的字摆在那儿，正文就从它底下
+ * 滚过去、字叠着字（owner 2026-10-10 截图）。底下是渐隐带以外的地方，什么都不会
+ * 从它后面经过。Claude Code 桌面版的模型、强度、权限也都放在输入框底下。
+ *
+ * 左边让出几个像素，和输入框里的加号对齐，读起来是「这个框的脚注」。
+ */
+.pills {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  max-width: var(--conv-w);
+  margin: 6px auto 0;
+  padding: 0 6px;
+}
+
+/*
+ * 输入框与发送键在同一个圆角容器里：它们是一个动作的两半。
+ *
+ * 整屏最圆、浮得最高的东西（--r-xl、--lift-2）。它是这一页的主角——
+ * 内容从它底下淡出去（见 conversation.css 的 .conv-scroll），它自己不透明。
+ */
+.composer-box {
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+  max-width: var(--conv-w);
+  margin: 0 auto;
+  padding: 7px 7px 7px 10px;
+  border: 1px solid var(--bd-hairline);
+  border-radius: var(--r-xl);
+  background: var(--bg-raised);
+  box-shadow: var(--lift-2);
+  transition: border-color var(--t-hover) var(--ease), box-shadow var(--t-hover) var(--ease);
+}
+
+.composer-box:focus-within {
+  border-color: var(--bd-strong);
+  /* 除了描边变深再加一圈极淡的光——输入框是这一屏的主角，
+     它拿到焦点应该看得出来，而只换 1px 描边在深色下几乎看不见 */
+  box-shadow: var(--lift-2), 0 0 0 4px color-mix(in srgb, var(--ring) 10%, transparent);
+}
+
+.input {
+  flex: 1;
+  min-width: 0;
+  /* 高度由 JS 按内容算（见 InputBox），这里只定上限 */
+  max-height: 200px;
+  padding: 8px 0 8px 4px;
+  border: 0;
+  background: transparent;
+  color: var(--tx-primary);
+  font-family: inherit;
+  font-size: 15px;
+  line-height: 1.55;
+  resize: none;
+  caret-color: var(--accent);
+}
+
+.input::placeholder {
+  color: var(--tx-tertiary);
+}
+
+.input:focus {
+  outline: none;
+}
+
+/*
+  加号：拉起系统文件框。
+
+  ⚠ 类名前缀是 `attach-` 而不是 `pick-`：`new.css` 里已经有一个 `.pick`（新建页
+  那个目录选择框，占满整行的输入控件）。两份 CSS 都是全局的、没有 CSS Modules，
+  后加载的赢——第一版就撞上了，按钮穿着别人的 width:100%/display:block 变成一条
+  灰色长条，owner 截图指出来的就是它。加新类名之前先 grep 一遍。
+传文件的三条路（拖拽 / 粘贴 / 这颗）通向同一个 onFiles，
+  但前两条界面上没有任何提示——这颗是那件事唯一看得见的入口。
+
+  样式刻意比发送键轻一档：幽灵按钮、无底色。发送是这一屏的主动作，
+  传文件是辅助动作，两颗一样重会互相抢。
+*/
+.attach {
+  flex: none;
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  color: var(--tx-tertiary);
+  transition: background-color var(--t-hover) var(--ease), color var(--t-hover) var(--ease);
+}
+
+.attach:hover {
+  background: var(--bg-hover);
+  color: var(--tx-primary);
+}
+
+/*
+  真正那个控件，铺满整颗加号并摆在最上层——**手指落的就是它**。
+  见 InputBox.tsx 里那段：合成点击 + display:none 在受限 WebView 里不弹选择器。
+
+  opacity:0 而不是 visibility/display：后两者都会让它退出命中测试，
+  那就又回到了原来那个坑。font-size:0 是压掉浏览器自带的「未选择文件」那行字，
+  它会把这个盒子撑开。
+*/
+.attach-input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  font-size: 0;
+  cursor: pointer;
+}
+
+.attach-input:disabled {
+  cursor: default;
+}
+
+.attach:has(.attach-input:disabled) {
+  opacity: 0.4;
+}
+
+/* 键盘用户看得见焦点：input 是透明的，环画在外面那颗圈上 */
+.attach:has(.attach-input:focus-visible) {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+/* 用两条线拼一个加号，不引图标字体——整个 web 端都没有图标依赖 */
+.attach-plus {
+  position: relative;
+  width: 14px;
+  height: 14px;
+  transition: transform var(--t-layout) var(--spring-soft);
+}
+
+.attach:hover .attach-plus {
+  transform: rotate(90deg);
+}
+
+.attach-plus::before,
+.attach-plus::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  border-radius: 1px;
+  background: currentColor;
+}
+
+.attach-plus::before { width: 14px; height: 1.7px; }
+.attach-plus::after { width: 1.7px; height: 14px; }
+
+/*
+ * 发送键：**有东西可发的时候，它就是那颗球。**
+ *
+ * 空着的时候是一颗凹进去的灰圆，箭头也是灰的——「还没有可传的」。
+ * 打了字（或挂了附件），它变成电光蓝：球到你手上了。按下去，
+ * 那颗球真的会被抛出去，落在这一轮的状态栏上（Conversation.tsx 的 tossToTurn）。
+ * 这是整页唯一一处用蓝色表示「可以按」——因为按下去的那个东西，就是那颗球。
+ */
+.send {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #fff;
+  cursor: pointer;
+  transition:
+    background-color var(--t-hover) var(--ease),
+    color var(--t-hover) var(--ease),
+    transform var(--t-press) var(--ease);
+}
+
+/*
+ * 反馈挂在**按下**，不是松手。
+ *
+ * 等到 click 才有反应，手感会「掉下悬崖」——那一下读起来是界面在响应它自己，
+ * 不是我按出来的。`:active` 正好是按下那一刻。
+ *
+ * 缩到 0.92 而不是更多：发送键只有 34px，缩太狠会在小尺寸上看着像抖。
+ */
+.send:hover:not(:disabled) {
+  background: var(--accent-active);
+}
+
+.send:active:not(:disabled) {
+  transform: scale(0.92);
+}
+
+/* 叠加色而不是 --bg-sunken：它坐在输入框（--bg-raised）里，两种主题下都得比那层深一点 */
+.send:disabled {
+  background: var(--bg-press);
+  color: var(--tx-tertiary);
+  cursor: default;
+}
+
+/* 正在发：还是那颗蓝球，里面转一圈——不是「按不了」，是「在路上」 */
+.send:disabled:has(.send-wait) {
+  background: var(--accent);
+  color: #fff;
+}
+
+/* 箭头：一根竖线加一个折角，mask 画成 currentColor，不引图标库——整个界面只需要这一支 */
+.send-arrow {
+  width: 14px;
+  height: 14px;
+  background: currentColor;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 14'%3E%3Cpath d='M7 12.2V2.4M2.6 6.6 7 2.2l4.4 4.4' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 14'%3E%3Cpath d='M7 12.2V2.4M2.6 6.6 7 2.2l4.4 4.4' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / contain no-repeat;
+}
+
+.send-wait {
+  width: 13px;
+  height: 13px;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: spin 700ms linear infinite;
+}
+
+/*
+ * 停止：同一颗键的另一个样子。跑着的时候、输入框空着才出现（见 InputBox 抬头）。
+ *
+ * 墨色、方块——和蓝色的发送一眼分得开。蓝色在这个界面里只属于那颗球，而按下停止
+ * 不是把球传出去，是把这一轮掐掉。悬停不变红：它不是故障，只是一个要慎重点的动作，
+ * 而红色一出现，人会以为哪里坏了。
+ */
+.send.is-stop {
+  background: var(--bg-inverse);
+  color: var(--tx-inverse);
+}
+
+.send.is-stop:hover {
+  background: color-mix(in srgb, var(--bg-inverse) 82%, var(--bg-page));
+}
+
+.send-stop {
+  width: 10px;
+  height: 10px;
+  border-radius: 2.5px;
+  background: currentColor;
+}
+
+/*
+  ── 手指来点的时候 ────────────────────────────────────────────────────────
+
+  **这一套是按鼠标做的，但 iPad 拿到的就是它。**
+
+  iPad 默认自称是 Mac（UA 里是 `Macintosh`、没有 `Mobile`），于是
+  `src/http/static.js` 的 `isMobileUA` 判它不是手机，发过去的是 web/dist 而不是
+  手机那套。owner 自己用电脑和 iPhone 都没事——电脑是鼠标，iPhone 拿到的是
+  app/dist；唯一会碰上「鼠标界面 + 手指」这个组合的就是平板。
+
+  在那个组合下，34×34 的加号正上方 20px 就是 140px 宽的模型配置条。34 低于 44
+  这条触摸下限，手指落点一偏，浏览器做触摸命中修正时就会挑中旁边那个大得多的
+  目标——表现出来是「点加号没反应，弹出来的是模型配置」。
+  （2026-10-10 起配置条在输入框**底下**了，挨着加号的方向从上面换成了下面，
+  道理一样：两个目标之间得留出手指宽度，见下面的 .pills。）
+
+  所以在粗指针下把命中区撑到 44，**视觉大小一个像素都不动**：这两颗按钮的分量
+  是调过的（发送重、传文件轻），真把它们画大就把那个关系破坏了。伪元素只吃事件
+  不占位置，点在它身上等于点在宿主按钮上。
+
+  判据用 `pointer: coarse` 而不是屏幕宽度：要问的是「这一下是手指还是鼠标」，
+  不是「屏幕多大」。iPad 接了触控板时 Safari 仍然报 coarse——对的，因为手指
+  那条路还在。
+*/
+@media (pointer: coarse) {
+  /*
+    加号那颗直接把 input 本身撑出圈外（34 + 5×2 = 44）：它就是命中区，
+    不需要再拿伪元素去代劳。width/height 得交还给 inset，否则 100% 会压过它。
+  */
+  .attach-input {
+    inset: -5px;
+    width: auto;
+    height: auto;
+  }
+
+  .send {
+    position: relative;
+  }
+
+  .send::after {
+    content: '';
+    position: absolute;
+    inset: -5px;
+  }
+
+  /*
+    配置条和输入框拉开。6px 是按鼠标定的；手指光落点抖动就有十几个 px，6px 等于把
+    「模型配置」和「加号」摞成了一个目标，而配置条有 140px 宽、加号只有 34px，
+    抢起来永远是加号输。配置条自己撑到 44 写在 sessionconfig.css。
+  */
+  .pills {
+    margin-top: 16px;
+  }
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* 插队（2026-11-14）：跑着的时候框里有字才出现，挨着发送键。不抢发送键的蓝——那是排队 */
+.send-cut {
+  flex: none;
+  align-self: flex-end;
+  height: 32px;
+  padding: 0 12px;
+  border: 1px solid var(--bd-hairline);
+  border-radius: 999px;
+  background: var(--bg-page);
+  color: var(--tx-secondary);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.send-cut:hover {
+  background: var(--bg-hover);
+  color: var(--tx-primary);
+}

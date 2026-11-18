@@ -1,0 +1,341 @@
+/*
+ * 设计 token。
+ *
+ * **这是网页端自己的一套，2026-09-28 起不再是 App 的快照。** 浏览器端与 iOS 端
+ * 刻意不共享 token 文件——理由见 docs/superpowers/specs/2026-09-14-baton-desktop-web-design.md §2。
+ * 这一版的来历与每条取舍见 docs/superpowers/specs/2026-09-28-web-visual-pass-design.md。
+ *
+ * 品牌的三样东西原样保留，一个值都没动：
+ *   墨   #22211F   logo 里那只手的颜色
+ *   球   #2455FF   整个产品唯一的高饱和色
+ *   白   #FFFFFF   页底。owner 在 App 端点名把暖米白换成了纯白，这边跟着
+ *
+ * 新加的是**材质的层次**：
+ *
+ *   台面 frame    侧栏直接画在这上面
+ *   纸   page     会话、新建、设置——人读东西的地方，一张浮在台面上的白纸
+ *   凹槽 sunken   纸上压下去的那一层：代码块、展开的工具、输入框里的按钮底
+ *
+ * 旧 token 名全部保留（--bg-page 仍然是「纸」）：几十处样式靠它们，
+ * 换名字就等于又动了布局。
+ */
+
+:root {
+  color-scheme: light dark;
+
+  /* ── 材质 ──────────────────────────────────────────────────────────────
+   * 台面不带米黄。App 端 bgSecondary 那条注释记着：同色相的米色压在白底旁边
+   * 「会显出米黄」，所以改成了中性灰。这里取的是**偏冷半度**的中性灰——
+   * 它和电光蓝同一侧，蓝球放在上面不会被底色拖脏。
+   */
+  --bg-frame: #edeef1;
+  --bg-page: #ffffff;
+  --bg-sunken: #f4f4f6;
+  /* 浮起来的东西（弹层、输入框、选中的那一行）。浅色下与纸同色，靠阴影分层 */
+  --bg-raised: #ffffff;
+  --bg-inverse: #22211f;
+  /* 叠加式的悬停与按下。叠在台面上和叠在纸上都对，不用各配一个色值 */
+  --bg-hover: rgba(34, 33, 31, 0.055);
+  --bg-press: rgba(34, 33, 31, 0.1);
+
+  --tx-primary: #22211f;
+  --tx-secondary: #4a4843;
+  --tx-tertiary: #6e6b66;
+  --tx-inverse: #f7f7f8;
+
+  --accent: #2455ff;
+  --accent-active: #1b40c4;
+  /* 球投下的那一小片蓝：选中、正在等你的卡片。只用作底，不作字色 */
+  --accent-soft: color-mix(in srgb, #2455ff 8%, #ffffff);
+  /* 只用在真的有成败含义的地方，不作装饰 */
+  --tx-success: #1f6b36;
+  --tx-danger: #b3261e;
+  /* 「在等你」——不是错，也不是正常跑着。和 iOS 端的 txWarning 同一个意思（满足 WCAG AA >= 5.2:1） */
+  --tx-warning: #855200;
+
+  --bd-hairline: rgba(34, 33, 31, 0.1);
+  --bd-strong: rgba(34, 33, 31, 0.17);
+  --ring: rgba(34, 33, 31, 0.7);
+
+  /*
+   * 用户气泡：**墨色的一块**。
+   *
+   * 设计包里对话那一屏（.design/05-conversation.png）用户那句就是墨底白字。
+   * 它在长会话里还有一个实际用处：agent 一轮常常是几屏正文加工具，
+   * 往回翻的时候，墨色块是整条滚动区里最好找的锚点——「我当时说了什么」
+   * 一眼就能定位。原来那块淡蓝灰和工具折叠块只差一点色相，远看分不开。
+   */
+  --bubble: #22211f;
+  --bubble-tx: #f7f7f8;
+  --bubble-sunken: rgba(247, 247, 248, 0.13);
+  --bubble-link: #9db2ff;
+
+  /* 滚动条。这两个值本来就在设计系统里（tokens.ts 的 sb / sbHover） */
+  --sb: rgba(34, 33, 31, 0.17);
+  --sb-hover: rgba(34, 33, 31, 0.34);
+
+  /*
+   * 投影。**三档，按「离纸多高」分，不是每个组件各拍一个。**
+   *
+   * 每档都是两层：一层紧贴的交代轮廓，一层大而淡的交代高度。只有一层的话，
+   * 要么边缘糊（只有大的），要么浮不起来（只有小的）。颜色取墨色而不是纯黑——
+   * 纯黑的影子压在偏冷的台面上会发灰发脏。
+   */
+  --lift-1: 0 0 0 1px rgba(22, 22, 28, 0.045), 0 1px 2px rgba(22, 22, 28, 0.07);
+  --lift-2: 0 0 0 1px rgba(22, 22, 28, 0.05), 0 2px 4px -1px rgba(22, 22, 28, 0.06),
+    0 14px 34px -14px rgba(22, 22, 28, 0.26);
+  --lift-3: 0 0 0 1px rgba(22, 22, 28, 0.06), 0 4px 10px -2px rgba(22, 22, 28, 0.08),
+    0 32px 80px -24px rgba(22, 22, 28, 0.42);
+
+  /*
+   * 圆角。**按层级给，不是一个数用到底**：越大、越靠外的东西越圆。
+   *   xs  行内代码、小标签
+   *   sm  列表行、小按钮
+   *   md  代码块、工具块、弹层里的行
+   *   lg  弹层、卡片、那张纸
+   *   xl  输入框——整屏唯一的主角，最圆
+   */
+  --r-xs: 6px;
+  --r-sm: 9px;
+  --r-md: 13px;
+  --r-lg: 18px;
+  --r-xl: 24px;
+
+  /*
+   * 动效。一条曲线 + 四档时长，全界面只用这几个值——每处各拍一个数，
+   * 界面就会像是几个人分别做的。
+   *
+   * 曲线是「出得快、收得稳」：起步陡、尾段长。线性和 ease-in-out 都不行，
+   * 前者机械，后者起步慢半拍，点下去像没反应。
+   *
+   * **按下那一档必须在 100ms 以内。** 超过这个数，人就不再把它读成
+   * 「我按出来的」，而是「界面自己在动」——这条是整套里最不能省的。
+   *
+   * 这些值全部被本文件末尾的 prefers-reduced-motion 总闸罩住。
+   */
+  --ease: cubic-bezier(0.2, 0.7, 0.3, 1);
+  --t-press: 90ms;
+  --t-hover: 140ms;
+  --t-enter: 190ms;
+  --t-layout: 260ms;
+
+  /*
+   * 两条弹簧，**只给球和跟球有关的东西用**（滑块、落地、弹出）。
+   *
+   * 用 `linear()` 逐点写出来的，不是 cubic-bezier 近似——贝塞尔只能过冲一次，
+   * 画不出「弹一下再回来」。点是按阻尼振动方程算的（ζ=0.72 / ζ=0.42）。
+   * 不支持 `linear()` 的浏览器会退回初始值 ease，照样能用，只是不弹。
+   *
+   *   soft    过冲 4%。滑块、面板这种「该稳」的东西
+   *   bouncy  过冲 23%。球落地、弹出——它本来就是个球
+   */
+  --spring-soft: linear(0, 0.051 4.2%, 0.171 8.3%, 0.322 12.5%, 0.477 16.7%, 0.62 20.8%,
+    0.742 25%, 0.841 29.2%, 0.916 33.3%, 0.969 37.5%, 1.004 41.7%, 1.025 45.8%, 1.035 50%,
+    1.038 54.2%, 1.037 58.3%, 1.032 62.5%, 1.026 66.7%, 1.02 70.8%, 1.015 75%, 1.01 79.2%,
+    1.006 83.3%, 1.003 87.5%, 1.001 91.7%, 1);
+  --spring-bouncy: linear(0, 0.07 2.8%, 0.243 5.6%, 0.467 8.3%, 0.698 11.1%, 0.903 13.9%,
+    1.063 16.7%, 1.17 19.4%, 1.223 22.2%, 1.232 25%, 1.208 27.8%, 1.163 30.6%, 1.109 33.3%,
+    1.057 36.1%, 1.011 38.9%, 0.977 41.7%, 0.956 44.4%, 0.946 47.2%, 0.947 50%, 0.954 52.8%,
+    0.965 55.6%, 0.978 58.3%, 0.99 61.1%, 1 63.9%, 1.007 66.7%, 1.011 69.4%, 1.013 72.2%,
+    1.012 75%, 1.01 77.8%, 1.007 80.6%, 1.004 83.3%, 1.002 86.1%, 1);
+
+  /*
+   * 字族，分工明确：
+   *   sans     界面与叙述。方案指定 Nimbus Sans，未落地字体文件，跟随系统 grotesque。
+   *            Windows 11 上优先 Segoe UI Variable——它带光学尺寸，小字和大字各有
+   *            一套字形，比老 Segoe UI 在 12px 上干净得多
+   *   display  标题。拉丁同上取 Display 那一档；中文在 Windows 上取**等线**：
+   *            微软雅黑的粗体放到 30px 以上又黑又钝，等线同样是系统自带、
+   *            笔画更细更直，大字才撑得起「一道门」的气质。Mac 上走苹方，不受影响
+   *   mono     **产品自己的材料**——会话里的工具调用、路径、测试输出。
+   *            它不是装饰性的「小标签用等宽」，是那些内容本来就长这样
+   */
+  --font-sans: "Segoe UI Variable Text", "Segoe UI", ui-sans-serif, system-ui, -apple-system,
+    BlinkMacSystemFont, Roboto, "Helvetica Neue", "PingFang SC", "Hiragino Sans GB",
+    "Microsoft YaHei", sans-serif;
+  /* 等线必须排在 system-ui 前面：system-ui 在中文系统上会把汉字交给雅黑 UI，
+     排在它后面的等线就永远轮不到（实测标题一直是雅黑）。Mac 上没有等线，
+     -apple-system 自带苹方回退，不受影响 */
+  --font-display: "Segoe UI Variable Display", "Segoe UI", -apple-system, BlinkMacSystemFont,
+    "Helvetica Neue", "PingFang SC", "Hiragino Sans GB", DengXian, "Microsoft YaHei",
+    ui-sans-serif, system-ui, Roboto, sans-serif;
+  /*
+    agent 正文用衬线。**和 App 端是同一个设计**（app/src/theme/tokens.ts 用
+    Georgia），不是这儿临时起意换字体：拉丁字母走 Georgia，中日韩字符因为
+    Georgia 没有这些字形，由系统逐字回退到 PingFang / 微软雅黑——
+    恰好得到「拉丁衬线 + 中文无衬线」，不需要加载任何字体文件。
+
+    owner：「整体字体没有使用更优雅的字体」。差距就在这儿：手机上 agent 的回复
+    是衬线排版，网页端一直是纯系统无衬线，两端看着像两个产品。
+  */
+  --font-serif: Georgia, "Times New Roman", "Songti SC", "PingFang SC",
+    "Microsoft YaHei", serif;
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", "Cascadia Code", Menlo, Consolas,
+    "Liberation Mono", monospace;
+}
+
+/*
+ * 深色。**认 <html data-theme> 而不是媒体查询**（2026-11-06 起）：设置里能手动选浅色 / 深色 /
+ * 跟随系统，媒体查询做不到「系统是深色但我要浅色」。跟随系统时由 prefs.ts 与 index.html 里
+ * 那段内联脚本按 prefers-color-scheme 写这个属性，所以默认行为和原来一样。
+ */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  /*
+    深色下层次反过来读：台面最暗，纸亮一档，浮起来的再亮一档。
+    凹槽和浮起**必须拉开**：它们会互相嵌套（输入框里的灰圆、弹层里的工具条），
+    第一版两者只差 1（#202024 / #1f1f23），嵌进去就看不见了（实测）
+  */
+  --bg-frame: #0d0d0f;
+  --bg-page: #17171a;
+  --bg-sunken: #1f1f23;
+  --bg-raised: #27272c;
+  --bg-inverse: #f2f0ea;
+  --bg-hover: rgba(242, 240, 234, 0.06);
+  --bg-press: rgba(242, 240, 234, 0.1);
+
+  --tx-primary: #f2f0ea;
+  --tx-secondary: #c4c1b9;
+  --tx-tertiary: #9a968e;
+  --tx-inverse: #17171a;
+
+  /* #2455ff 在深底上偏闷，提亮——与 iOS 端同一处理 */
+  --accent: #5c82ff;
+  --accent-active: #7d9bff;
+  --accent-soft: color-mix(in srgb, #5c82ff 13%, #17171a);
+  --tx-success: #7cc48f;
+  --tx-danger: #f2836f;
+  /* 深底上提亮，和 accent / success / danger 同一处理 */
+  --tx-warning: #e0a94a;
+
+  --bd-hairline: rgba(242, 240, 234, 0.09);
+  --bd-strong: rgba(242, 240, 234, 0.16);
+  --ring: rgba(242, 240, 234, 0.7);
+
+  /*
+    深色下气泡不跟着「反色」变成一块亮米白——那会是满屏最刺眼的东西。
+    改成比纸亮两档的墨灰：仍然是整条滚动区里最实的一块，只是不发光。
+  */
+  --bubble: #2d2d32;
+  --bubble-tx: #f2f0ea;
+  --bubble-sunken: rgba(242, 240, 234, 0.1);
+  --bubble-link: #9db2ff;
+
+  --sb: rgba(242, 240, 234, 0.17);
+  --sb-hover: rgba(242, 240, 234, 0.32);
+
+  /* 深色下影子看不见，高度改由**顶上一道亮边**交代——像光从上面打下来 */
+  --lift-1: 0 0 0 1px rgba(242, 240, 234, 0.07), 0 1px 2px rgba(0, 0, 0, 0.4);
+  --lift-2: 0 0 0 1px rgba(242, 240, 234, 0.08), inset 0 1px 0 rgba(242, 240, 234, 0.04),
+    0 16px 40px -12px rgba(0, 0, 0, 0.7);
+  --lift-3: 0 0 0 1px rgba(242, 240, 234, 0.09), inset 0 1px 0 rgba(242, 240, 234, 0.05),
+    0 36px 90px -20px rgba(0, 0, 0, 0.85);
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+}
+
+/*
+ * 字号与对话宽度（设置 → 外观）。字号用 zoom 整体缩放：样式里几百处写的是 px，
+ * 改根字号只会动到少数用 rem 的地方，缩放才是「整个界面大一号」。
+ */
+:root[data-size="sm"] body { zoom: 0.92; }
+:root[data-size="lg"] body { zoom: 1.1; }
+
+/* 对话那一栏的宽度。会话页的消息、输入框、附件条、提问卡都按它对齐 */
+:root { --conv-w: 780px; }
+:root[data-width="wide"] { --conv-w: 1040px; }
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+/* min-height 而不是 height：页面要能超出一屏往下滚 */
+html,
+body,
+#root {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg-page);
+  color: var(--tx-primary);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+/* 选中的文字染一层球的蓝。浏览器默认那块深蓝在墨色字上几乎读不出来 */
+::selection {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+/*
+ * 滚动条。
+ *
+ * 系统默认那条在浅色下是一道灰柱，在深色页面上更是白得刺眼，而这个界面到处
+ * 都是滚动区（侧栏、对话、工具输出、代码块），默认样式会把它们全部框成方块。
+ *
+ * 两套写法都要：`scrollbar-width/color` 是标准属性（Firefox 与新版 Chromium），
+ * `::-webkit-scrollbar` 覆盖旧一些的 WebKit。
+ *
+ * 透明边框 + background-clip:padding-box 是让滑块看起来"细而居中"的惯用法——
+ * 直接写窄宽度的话，滑块会贴着轨道边缘，悬停区也跟着变小不好抓。
+ */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--sb) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 11px;
+  height: 11px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background-color: var(--sb);
+  background-clip: padding-box;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background-color: var(--sb-hover);
+}
+
+/* 两条滚动条交汇的那个小方块，默认会是一块实心灰 */
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* 键盘焦点必须看得见。:focus-visible 只在键盘操作时出现，鼠标点击不会。 */
+:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 3px;
+}
+
+/*
+ * 动效总闸。
+ *
+ * `iteration-count: 1` 不能省：只把时长压到 0.01ms 的话，无限循环的动画
+ * （球在转、在弹）会以每帧一个随机相位的方式继续跑——看起来是在抖，
+ * 比真的动还糟。压成一次，它就停在终点。
+ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

@@ -1,0 +1,384 @@
+/*
+ * 配对页的表单（Pair.tsx）。版式在 door.css，和首屏共用。
+ *
+ * 2026-11-06 重做：一个输入框 + 一排刻度，换成 12 个格子（三组）。格子是画出来的，
+ * 真的输入框透明地盖在上面——理由见 Pair.tsx 抬头。
+ */
+
+.pair-form {
+  max-width: 460px;
+}
+
+/*
+ * 宽屏：右栏里只有这一张表，贴左的话 2560 宽的屏上右边空出一千多像素（owner 的屏实测）。
+ * 表单在右栏里居中（字标就在表单最上面，跟着一起居中）。
+ * 首屏（欢迎页）右栏有文字和会话示意两块，仍然贴左，不受影响。
+ */
+@media (min-width: 1000px) and (min-aspect-ratio: 11 / 10) {
+  .door-pair .door-body {
+    margin-inline: auto;
+  }
+}
+
+.pair-eyebrow {
+  margin: 0 0 10px;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--accent);
+}
+
+.pair-title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: clamp(30px, 3.1vw, 42px);
+  line-height: 1.15;
+  letter-spacing: -0.03em;
+  font-weight: 700;
+  color: var(--tx-primary);
+}
+
+/* 两行高度先占住：提示语在一行与两行之间切换时，下面的格子不许跟着跳 */
+.pair-sub {
+  min-height: calc(1.7em * 2);
+  margin: 12px 0 0;
+  font-size: 15px;
+  line-height: 1.7;
+  color: var(--tx-secondary);
+}
+
+/* ── 格子 ──────────────────────────────────────────────────────────────── */
+
+.cells {
+  position: relative;
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  margin-top: 26px;
+}
+
+/* 真的输入框：盖满整排格子、完全透明。点哪一格都是点它；光标与选区也不画出来——格子自己画 */
+.cells-input {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: transparent;
+  caret-color: transparent;
+  /* 16px 以下 iOS 一聚焦就放大整页 */
+  font-size: 16px;
+  cursor: text;
+  opacity: 0;
+}
+
+.cells-group {
+  display: flex;
+  flex: 1;
+  gap: 6px;
+}
+
+.cell {
+  position: relative;
+  display: flex;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  height: 58px;
+  border-radius: 12px;
+  background: var(--bg-sunken);
+  /* 用 strong 不用 hairline：深色下 hairline 的框几乎看不见，一排格子只剩几颗点 */
+  box-shadow: inset 0 0 0 1.5px var(--bd-strong);
+  color: var(--tx-primary);
+  font-family: var(--font-mono);
+  font-size: clamp(20px, 2.1vw, 26px);
+  font-weight: 650;
+  transition: box-shadow var(--t-hover) var(--ease), background-color var(--t-hover) var(--ease);
+}
+
+/* 空格子里一个小圆点：一眼数得清还剩几格，比一排 X 安静 */
+.cell:not(.is-filled)::after {
+  content: '';
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--bd-strong);
+}
+
+.cell.is-filled {
+  background: var(--bg-raised);
+  box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--tx-primary) 35%, transparent);
+  animation: cell-in 260ms var(--spring-bouncy) both;
+}
+
+@keyframes cell-in {
+  from { transform: scale(0.86); }
+}
+
+/* 下一个要填的那格：球色的框 + 一根闪烁的光标 */
+.cell.is-here {
+  background: var(--bg-raised);
+  box-shadow: inset 0 0 0 2px var(--accent), 0 0 0 4px color-mix(in srgb, var(--accent) 16%, transparent);
+}
+
+.cell.is-here::after {
+  width: 2px;
+  height: 26px;
+  border-radius: 1px;
+  background: var(--accent);
+  animation: caret 1.1s steps(1) infinite;
+}
+
+@keyframes caret {
+  50% { opacity: 0; }
+}
+
+/* 配对失败：整排抖一下，框变成警示色，直到他改动 */
+.cells.is-miss {
+  animation: cells-shake 380ms var(--ease) both;
+}
+
+.cells.is-miss .cell.is-filled {
+  box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--tx-danger) 70%, transparent);
+  color: var(--tx-danger);
+}
+
+@keyframes cells-shake {
+  20% { transform: translateX(-7px); }
+  40% { transform: translateX(6px); }
+  60% { transform: translateX(-4px); }
+  80% { transform: translateX(2px); }
+}
+
+/* 连上了：格子一起染成球色 */
+.cells.is-done .cell {
+  background: color-mix(in srgb, var(--accent) 12%, var(--bg-raised));
+  box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--accent) 55%, transparent);
+  color: var(--accent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cell.is-filled,
+  .cells.is-miss,
+  .cell.is-here::after {
+    animation: none;
+  }
+}
+
+/* ── 按钮与提示 ────────────────────────────────────────────────────────── */
+
+.pair-go {
+  display: block;
+  width: 100%;
+  margin-top: 22px;
+  min-height: 54px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--bg-inverse);
+  color: var(--tx-inverse);
+  font-family: inherit;
+  font-size: 16px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color var(--t-hover) var(--ease), color var(--t-hover) var(--ease),
+    transform var(--t-press) var(--ease);
+}
+
+.pair-go:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--bg-inverse) 86%, var(--bg-page));
+}
+
+.pair-go:active:not(:disabled) {
+  transform: scale(0.98);
+}
+
+/* 没填满时是一块凹下去的底，字写「还差 N 位」——看得出是「还不能点」，不是「坏了」。
+   原来是整块降到 28% 透明，深色下几乎看不见 */
+.pair-go:disabled {
+  background: var(--bg-sunken);
+  color: var(--tx-tertiary);
+  cursor: default;
+}
+
+.pair-error {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 16px 0 0;
+  padding: 12px 14px;
+  border-radius: var(--r-md);
+  background: color-mix(in srgb, var(--tx-danger) 8%, var(--bg-page));
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.pair-error-msg {
+  color: var(--tx-danger);
+  font-weight: 600;
+}
+
+/* 「该怎么办」压低一档但必须在场：这一页最常见的失败就是码过期了，
+   而那件事有明确的下一步——去电脑上再取一个。 */
+.pair-error-fix {
+  color: var(--tx-secondary);
+}
+
+.pair-host {
+  display: flex;
+  gap: 10px;
+  margin: 22px 0 0;
+  padding: 12px 14px;
+  border-radius: var(--r-md);
+  background: var(--bg-sunken);
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--tx-secondary);
+}
+
+.pair-host b {
+  font-family: var(--font-mono);
+  font-weight: 600;
+  color: var(--tx-primary);
+}
+
+.pair-host-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  margin-top: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+/* ── 怎么拿到配对码 ─────────────────────────────────────────────────────── */
+
+.pair-help {
+  margin-top: 14px;
+  font-size: 13.5px;
+  color: var(--tx-secondary);
+}
+
+.pair-help summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 0;
+  font-weight: 600;
+  color: var(--tx-primary);
+  cursor: pointer;
+  list-style: none;
+}
+
+.pair-help summary::-webkit-details-marker {
+  display: none;
+}
+
+/* 展开箭头：收着朝右，开着朝下 */
+.pair-help summary::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-right: 1.6px solid currentColor;
+  border-bottom: 1.6px solid currentColor;
+  transform: rotate(-45deg);
+  transition: transform var(--t-hover) var(--ease);
+}
+
+.pair-help[open] summary::before {
+  transform: rotate(45deg);
+}
+
+.pair-steps {
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+  counter-reset: step;
+}
+
+.pair-steps li {
+  position: relative;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 0 7px 32px;
+  line-height: 1.6;
+  counter-increment: step;
+}
+
+/* 步骤号：一颗小圆，和球同一种形状 */
+.pair-steps li::before {
+  content: counter(step);
+  position: absolute;
+  left: 0;
+  top: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 21px;
+  height: 21px;
+  border-radius: 50%;
+  background: var(--bg-sunken);
+  color: var(--tx-primary);
+  font-size: 11.5px;
+  font-weight: 700;
+}
+
+.pair-cmd {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 4px 3px 10px;
+  border-radius: 9px;
+  background: var(--bg-sunken);
+}
+
+.pair-cmd code,
+.pair-help-note code {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--tx-primary);
+}
+
+.pair-copy {
+  padding: 3px 9px;
+  border: 0;
+  border-radius: 7px;
+  background: var(--bg-raised);
+  box-shadow: var(--lift-1);
+  color: var(--tx-secondary);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.pair-copy:hover {
+  color: var(--tx-primary);
+}
+
+.pair-help-note {
+  margin: 8px 0 0;
+  padding-left: 32px;
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--tx-tertiary);
+}
+
+@media (max-width: 420px) {
+  .cells {
+    gap: 8px;
+  }
+
+  .cells-group {
+    gap: 4px;
+  }
+
+  .cell {
+    height: 48px;
+    border-radius: 10px;
+  }
+}

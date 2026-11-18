@@ -1,0 +1,5 @@
+{"type":"thread.started","thread_id":"00000000-0000-4000-8000-000000000002"}
+{"type":"turn.started"}
+{"type":"error","message":"Reconnecting... 1/5 (stream disconnected before completion: An error occurred while processing your request. Please include the request ID 00000000-0000-4000-8000-000000000099 in any support request.)"}
+{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"接力棒已就位。"}}
+{"type":"turn.completed","usage":{"input_tokens":24911,"cached_input_tokens":14080,"cache_write_input_tokens":0,"output_tokens":28,"reasoning_output_tokens":15}}

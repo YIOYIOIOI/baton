@@ -1,0 +1,37 @@
+# Desktop Web UI (Vite + React): lint, typecheck, build, and pure unit tests.
+name: web
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'web/**'
+      - 'test/web*.test.js'
+      - '.github/workflows/web.yml'
+  pull_request:
+    paths:
+      - 'web/**'
+      - 'test/web*.test.js'
+      - '.github/workflows/web.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm --prefix web ci
+      - run: npm --prefix web run lint
+      - run: npx --prefix web tsc -b --noEmit
+      - run: npm --prefix web run build
+      - run: node --test --import ./test/setup.js test/web*.test.js

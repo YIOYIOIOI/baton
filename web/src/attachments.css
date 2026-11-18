@@ -1,0 +1,171 @@
+/*
+  附件片。输入框上方那一条（要发出去的）和气泡下面那一排（已发出去的）
+  用同一套形状——人看到的那几张图，发出去前后应该是同一个样子。
+
+  类名 `att-` 前缀：这个项目的 CSS 全是全局的、没有 CSS Modules，
+  而 `.pick` 撞车那次的教训还在（按钮被撑成一条灰长条）。加新类名之前先 grep。
+*/
+
+.atts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  max-width: var(--conv-w);
+  margin: 0 auto 8px;
+}
+
+/* 已发出去的那排跟着气泡走，不居中 */
+.atts-sent {
+  margin: 8px 0 0;
+}
+
+/* 要发出去的那几张，像几张拍立得压在输入框上沿：浮起来、带影子 */
+.att {
+  position: relative;
+  display: flex;
+  align-items: center;
+  border-radius: 12px;
+  background: var(--bg-raised);
+  box-shadow: var(--lift-2);
+  overflow: hidden;
+  animation: att-in var(--t-layout) var(--spring-bouncy) both;
+}
+
+@keyframes att-in {
+  from { opacity: 0; transform: translateY(6px) scale(0.9); }
+}
+
+.att-img {
+  display: block;
+  width: 72px;
+  height: 72px;
+  object-fit: cover;
+}
+
+/*
+  非图片：一张窄卡片，名字可以省略号，大小在下面。
+
+  右边留 30px 给那颗叉：它是绝对定位压在右上角的，不留位置就会盖住文件名的
+  末尾——实测「报表 带空格.xlsx」被压成「报表 带空格.xls×」。图片那种看不出来
+  （叉压在图上本来就是对的），只有文字卡片会被挡。
+*/
+.att-file {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  justify-content: center;
+  max-width: 190px;
+  min-height: 50px;
+  padding: 8px 30px 8px 12px;
+}
+
+.att-name {
+  overflow: hidden;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--tx-primary);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.att-size {
+  font-size: 11.5px;
+  color: var(--tx-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+
+/*
+  撤掉。压在右上角，默认就看得见——不做 hover 才出现：
+  那在触摸屏上等于没有（web/dist 也会被 iPad 拿到）。
+*/
+.att-x {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: rgb(22 22 28 / 62%);
+  color: #fff;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  transition: background-color var(--t-hover) var(--ease), transform var(--t-press) var(--ease);
+}
+
+.att-x:hover {
+  background: rgb(22 22 28 / 82%);
+}
+
+.att-x:active {
+  transform: scale(0.9);
+}
+
+/*
+  手指来点的时候把命中区撑到 44（视觉还是那颗 20px 的小圆）。
+  和输入框那两颗按钮同一套做法，理由见 inputbox.css 末尾那段：
+  这一套是按鼠标做的，但 iPad 和「请求桌面版」的平板拿到的就是它。
+*/
+@media (pointer: coarse) {
+  .att-x::after {
+    content: '';
+    position: absolute;
+    inset: -12px;
+  }
+}
+
+/* 已发出去的是个下载链接，别带下划线；也不用浮那么高，它已经落定了 */
+.att-sent {
+  box-shadow: var(--lift-1);
+  text-decoration: none;
+  cursor: pointer;
+  animation: none;
+  transition: box-shadow var(--t-hover) var(--ease), transform var(--t-press) var(--ease);
+}
+
+.att-sent:hover {
+  box-shadow: var(--lift-2);
+}
+
+.att-sent:active {
+  transform: scale(0.98);
+}
+
+/* 已发出去那排没有叉压着，右边不用留位置 */
+.att-sent .att-file {
+  min-height: 40px;
+  padding: 6px 12px;
+}
+
+.att-sent .att-img {
+  width: 96px;
+  height: 96px;
+}
+
+/* 用户气泡里的附件靠右，跟气泡一边 */
+.msg-user .atts-sent {
+  justify-content: flex-end;
+}
+
+/*
+  还在传的那几个：一张浅底的片，一颗在拍的球 +「正在传 N 个」。
+  原来是输入框上方单独一行「正在传 N 个文件…」——又一行没有底色的字摞在正文上面。
+  挂在这条的末尾，传完它就变成旁边那样的一张，视线不用挪。
+*/
+.att-pending {
+  gap: 10px;
+  min-height: 50px;
+  padding: 8px 14px 8px 12px;
+  background: var(--bg-sunken);
+  box-shadow: none;
+  font-size: 12.5px;
+  color: var(--tx-secondary);
+  animation: none;
+}

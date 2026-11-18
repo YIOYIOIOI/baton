@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <!--
+      viewport-fit=cover：没有它，iPhone 上页面不会延伸到安全区底下，
+      底部的操作会浮在一条白边上方。安全区由 CSS 的 env(safe-area-inset-*) 自己让。
+    -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover"
+    />
+    <!-- 声明了系统才会把滚动条、输入光标这些原生控件跟着深色走 -->
+    <meta name="color-scheme" content="light dark" />
+    <link rel="icon" type="image/png" href="/favicon.png" />
+    <title>Baton</title>
+    <!--
+      主题、字号、对话宽度在首帧之前落到 <html> 上，否则选了深色的人每次刷新先白闪一下。
+      和 src/prefs.ts 的 applyPrefs 是同一段逻辑、同一个键，改一边要改另一边。
+    -->
+    <script>
+      (function () {
+        var p = {};
+        try { p = JSON.parse(localStorage.getItem('baton.prefs') || '{}') || {}; } catch (e) {}
+        var dark = false;
+        try { dark = window.matchMedia('(prefers-color-scheme: dark)').matches; } catch (e) {}
+        var r = document.documentElement;
+        r.setAttribute('data-theme', p.theme === 'light' || p.theme === 'dark' ? p.theme : dark ? 'dark' : 'light');
+        r.setAttribute('data-size', p.size === 'sm' || p.size === 'lg' ? p.size : 'md');
+        r.setAttribute('data-width', p.width === 'wide' ? 'wide' : 'normal');
+        var loc = p.locale === 'en' || p.locale === 'zh' ? p.locale : (/^zh\b/i.test(navigator.language || '') ? 'zh' : 'en');
+        r.lang = loc === 'zh' ? 'zh-CN' : 'en';
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
