@@ -5,6 +5,7 @@ import { spawn } from 'node:child_process';
 import { normPath } from '../scope.js';
 import { probeClaudeDefaults } from './defaults.js';
 import { killChildTree } from './spawn.js';
+import { cliLaunch, spawnCodexAppServer } from './codexRuntime.js';
 
 /**
  * 输入框里打 `/` 弹出来的那张命令表。
@@ -292,19 +293,15 @@ export async function codexCommands({
  * 起一个 `codex app-server` 问 `skills/list`。和 codexQueue.js 同一套启动与收尾
  * （Windows 上 codex 是 .cmd，经 shell；收的时候 taskkill /t 连同 codex 本身）。
  */
-export function listCodexSkills(cwd, {
+export async function listCodexSkills(cwd, {
   command = 'codex', timeoutMs = 30_000, spawnFn = spawn, killTreeFn = null,
 } = {}) {
   if (spawnFn === spawn && process.env.BATON_NO_CLI_PROBES === '1') {
-    return Promise.resolve([]);
+    return [];
   }
+  const launch = await cliLaunch(command);
   return new Promise((resolve, reject) => {
-    const child = spawnFn(command, ['app-server'], {
-      shell: process.platform === 'win32',
-      windowsHide: true,
-      stdio: ['pipe', 'pipe', 'ignore'],
-      ...(process.platform !== 'win32' ? { detached: true } : {}),
-    });
+    const child = spawnCodexAppServer(launch, spawnFn);
     let buf = '';
     let settled = false;
     const finish = (err, value) => {

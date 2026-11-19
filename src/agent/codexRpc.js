@@ -1,26 +1,22 @@
 import { spawn } from 'node:child_process';
+import { cliLaunch, spawnCodexAppServer } from './codexRuntime.js';
 import { killChildTree } from './spawn.js';
 
 /**
  * 起一个 `codex app-server`，按顺序调几个方法，拿到结果就收掉。
  *
- * 和 codexQueue.js / commands.js 的 listCodexSkills 同一套启动与收尾：Windows 上 codex 是 .cmd，
- * 必须经 shell；收的时候按平台清理整棵进程树（win32 用 taskkill /t，POSIX 用负 pid 杀组）。
+ * 与模型目录和轮次共用 CLI；收尾时按平台清理整棵进程树。
  * `initialize` 带 `experimentalApi: true`——目标、队列这些方法都是 experimental 的。
  *
  * @param {Array<{ method: string, params?: object }>} calls
  * @returns {Promise<Array<any>>} 每个调用的 result；任何一个回错误就抛
  */
-export function codexRpc(calls, {
+export async function codexRpc(calls, {
   command = 'codex', timeoutMs = 30_000, spawnFn = spawn, killTreeFn = null,
 } = {}) {
+  const launch = await cliLaunch(command);
   return new Promise((resolve, reject) => {
-    const child = spawnFn(command, ['app-server'], {
-      shell: process.platform === 'win32',
-      windowsHide: true,
-      stdio: ['pipe', 'pipe', 'ignore'],
-      ...(process.platform !== 'win32' ? { detached: true } : {}),
-    });
+    const child = spawnCodexAppServer(launch, spawnFn);
     const NL = String.fromCharCode(10);
     let buf = '';
     let settled = false;

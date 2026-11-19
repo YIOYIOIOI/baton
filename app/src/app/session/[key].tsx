@@ -1002,6 +1002,7 @@ export default function SessionScreen() {
             agent={live.agent ?? 'claude'}
             model={live.model}
             modelOptions={models.for(live.agent ?? 'claude')}
+            onOpenModels={models.refresh}
             config={models.config(live.agent ?? 'claude')}
             onModel={pickModel}
             effort={live.effort}

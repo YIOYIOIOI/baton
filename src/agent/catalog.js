@@ -42,8 +42,6 @@ import { killChildTree, runBuffered } from './spawn.js';
 const TTL_MS = 10 * 60 * 1000;
 const TIMEOUT_MS = 20_000;
 
-let cache = null;
-
 /** 从 `codex debug models` 的 JSON 里只取我们要的字段。坏输入一律返回空表，不抛。 */
 export function parseCatalog(json) {
   let o;
@@ -79,29 +77,26 @@ export function parseCatalog(json) {
  * 这个函数是来**补充**候选模型的，不该成为一个新的故障点：
  * 拿不到目录时界面退回现推的那几个，仍然能用。
  */
-export async function codexCatalog({ now = Date.now(), run = defaultRun, ttlMs = TTL_MS } = {}) {
-  if (cache && now - cache.at < ttlMs) return cache.value;
-  let value = [];
+export async function codexCatalog({ runtime = null, run = defaultRun } = {}) {
   try {
-    value = parseCatalog(await run());
+    return parseCatalog(await run(runtime));
   } catch {
-    value = [];
+    return [];
   }
-  cache = { at: now, value };
-  return value;
 }
 
-function defaultRun() {
+function defaultRun(runtime) {
   if (process.env.BATON_NO_CLI_PROBES === '1') {
     return Promise.reject(new Error('probes disabled'));
   }
   return runBuffered('codex', ['debug', 'models'], {
+    runtime,
     timeoutMs: TIMEOUT_MS,
     // 原始输出 ~505 KB，留足余量；它还会随模型数量增长
     maxBuffer: 16 * 1024 * 1024,
     unref: true,
   }).then(({ code, stdout }) => {
-    if (code && !stdout) throw new Error(`codex debug models 失败（exit ${code}）`);
+    if (code !== 0) throw new Error(`codex debug models 失败（exit ${code}）`);
     return stdout;
   });
 }

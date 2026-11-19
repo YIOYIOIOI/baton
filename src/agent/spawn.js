@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { cliLaunch } from './codexRuntime.js';
 
 /** 结束子进程及整个进程树：shell:true 下 child.kill() 只杀那层 cmd.exe。 */
 export function killChildTree(child) {
@@ -32,12 +33,13 @@ function unrefStream(s) {
 }
 
 /** 运行短命只读 CLI 并收集完整输出：带缓冲区上限与超时树杀。 */
-export function runBuffered(command, args, {
-  timeoutMs = 30_000, maxBuffer = 4 * 1024 * 1024, unref = false,
+export async function runBuffered(command, args, {
+  timeoutMs = 30_000, maxBuffer = 4 * 1024 * 1024, unref = false, runtime = null,
 } = {}) {
+  const launch = runtime ?? await cliLaunch(command);
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, {
-      shell: process.platform === 'win32',
+    const child = spawn(launch.command, args, {
+      shell: launch.shell, env: launch.env,
       windowsHide: true,
       stdio: ['ignore', 'pipe', 'pipe'],
       ...(process.platform !== 'win32' ? { detached: true } : {}),
@@ -92,23 +94,20 @@ export function runBuffered(command, args, {
  *   onLine?: (line: string) => void, onStart?: (h: { kill: () => void }) => void,
  *   timeoutMs?: number | null, maxStderrBytes?: number, maxRetainedBytes?: number, env?: NodeJS.ProcessEnv }} opts
  */
-export function runProcess({
+export async function runProcess({
   command, args, cwd, message, onLine, onStart, timeoutMs = null,
   maxStderrBytes = 512 * 1024, maxRetainedBytes = 8 * 1024 * 1024, env = process.env,
 }) {
+  let child;
+  let killed = false;
+  onStart?.({ kill() { killed = true; killChildTree(child); } });
+  const launch = await cliLaunch(command, env, true);
+  if (killed) return { code: null, lines: [], stderr: '', timedOut: false, killed };
   return new Promise((resolve) => {
-    // shell:true 在这里是安全的：argv 全部由程序构造（固定 flag + 经 uuid 校验的 id），
-    // 用户消息只走 stdin。Windows 上 claude/codex 是 .cmd 包装，
-    // Node 自 CVE-2024-27980 起要求 .cmd 必须经 shell 启动。
-    //
-    // 但 shell:true 会把命令与参数原样拼接（Node DEP0190），所以路径含空格的命令
-    // 会在空格处被 shell 切断（实测：C:\Program Files\nodejs\node.exe → 'C:\Program' 不是命令）。
-    // 裸名 claude / codex 不受影响，但配置里可以给绝对路径，故防御性加引号。
-    const safeCommand = /\s/.test(command) ? `"${command}"` : command;
-    const child = spawn(safeCommand, args, {
+    child = spawn(launch.command, args, {
       cwd,
-      env,
-      shell: true,
+      env: launch.env,
+      shell: launch.shell,
       windowsHide: true,
       ...(process.platform !== 'win32' ? { detached: true } : {}),
     });
@@ -139,20 +138,6 @@ export function runProcess({
     let buf = '';
     let stderr = '';
     let timedOut = false;
-    let killed = false;
-
-    // 交出停止能力：意图落盘在别处，这里只提供「怎么停」。
-    //
-    // 不能用 child.kill()：shell:true 下 child 是 cmd.exe，kill 只杀那一层，
-    // 真正的 agent 进程照跑到底。实测踩过——stop 回报 stopped:true，
-    // 而那一轮 12 秒后正常跑完记成了 ok，用户以为停了其实还在花钱。
-    // 必须连整棵进程树一起杀。
-    onStart?.({
-      kill() {
-        killed = true;
-        killChildTree(child);
-      },
-    });
 
     // shell:true 下 child 是 cmd.exe，child.kill() 只杀那一层，真正的 agent
     // 照跑到底：stdout 管道不关 → promise 永不 resolve → 轮次永远挂在 running。

@@ -21,7 +21,7 @@
 //   用掉的这台电脑的文件里没有。实测 app-server 回的是已用 40%，正好对上。
 //   所以 rollout 只在问不到（codex 起不来、超时）时兜底，并且标明是旧数。
 
-import { spawn } from 'node:child_process';
+import { cliLaunch, spawnCodexAppServer } from './agent/codexRuntime.js';
 import fs from 'node:fs';
 import http from 'node:http';
 import https from 'node:https';
@@ -103,17 +103,12 @@ export function parseCodexLive(result, now = Date.now()) {
 /**
  * 起一次 `codex app-server`，问 `account/rateLimits/read`，拿到就收掉。
  *
- * 和 agent/spawn.js 同一套启动方式（Windows 上 codex 是 .cmd，必须经 shell）；收的时候也一样
- * 要 taskkill /t：shell 下 child 是那层 cmd.exe，只杀它会把 codex 本身留下。
+ * 与实际轮次共用 CLI 和登录环境。
  */
-export function codexRateLimitsLive({ command = 'codex', timeoutMs = 20_000, now = () => Date.now() } = {}) {
+export async function codexRateLimitsLive({ command = 'codex', timeoutMs = 20_000, now = () => Date.now() } = {}) {
+  const launch = await cliLaunch(command);
   return new Promise((resolve, reject) => {
-    const child = spawn(command, ['app-server'], {
-      shell: process.platform === 'win32',
-      windowsHide: true,
-      stdio: ['pipe', 'pipe', 'ignore'],
-      ...(process.platform !== 'win32' ? { detached: true } : {}),
-    });
+    const child = spawnCodexAppServer(launch);
     let buf = '';
     let done = false;
     const finish = (fn, v) => {

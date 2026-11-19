@@ -223,6 +223,7 @@ export default function NewScreen() {
               onAgent={setAgent}
               model={model}
               modelOptions={models.for(agent)}
+              onOpenModels={models.refresh}
               config={models.config(agent)}
               onModel={setModel}
               effort={effort}

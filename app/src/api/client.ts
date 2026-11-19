@@ -218,7 +218,7 @@ export function createClient(cfg: ClientConfig) {
     usage: (refresh = false) => json<Usage>(`/api/usage${refresh ? '?refresh=1' : ''}`),
 
     /** 可选模型。列表是那台电脑现推的——不同机器、不同中转，结果就不同。 */
-    models: () => json<ModelList>('/api/models'),
+    models: (refresh = false) => json<ModelList>(`/api/models${refresh ? '?refresh=1' : ''}`),
 
     /** 传 null 表示清除选择、回到 agent 默认。Codex 会被服务端拒（它没有这个开关）。 */
     setEffort: (key: string, effort: Effort | null) =>

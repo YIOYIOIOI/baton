@@ -19,6 +19,8 @@ Helper scripts for pairing, autostart installation, daemon supervision, and OSS 
 | `start-daemon.ps1` | Windows Startup runner that inherits user-level environment credentials and restarts the daemon on exit | Invoked by the Startup shortcut (`pwsh -NoProfile -File scripts\start-daemon.ps1`) |
 | `watchdog.ps1` | Monitor daemon port, `/api/health`, and optional Cloudflare Tunnel process | `pwsh -NoProfile -File scripts\watchdog.ps1 -Check` |
 
+On Windows, Baton checks for the installed Codex desktop CLI before opening the model menu or starting a turn. If the desktop app is absent, it runs `codex` from `PATH`. The Startup runner rereads the current user's and machine's Codex provider variables for each launch; manual launches keep their shell environment. After changing account, API configuration, or desktop version, reopen the model menu. Select **Default** to follow the configured model on future turns. Baton does not install updates, change a pinned model, or replay a failed turn.
+
 ## Release & OSS Hygiene
 
 | Script | Purpose | Usage |

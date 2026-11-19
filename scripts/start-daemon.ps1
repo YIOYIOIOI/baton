@@ -14,8 +14,8 @@
 #
 # 这只是第三方 API 中转那一路。用账号登录（/login）时凭据在本地配置文件/Keychain，
 # 用户级环境变量里没有 ANTHROPIC_*，这里也就不注入——**而只要注入了，就是它说了算**：
-# 环境变量里的 token 优先于账号登录（agent-protocol §12）。守护进程只在启动时读
-# 一次，所以切换供应商环境变量之后，要连这个脚本一起重启才生效。
+# 环境变量里的 token 优先于账号登录（agent-protocol §12）。Codex 每次启动子进程时
+# 重读登录环境；Claude 的环境变量仍取这个脚本启动时的值。
 #
 # 旧的启动方式（scripts/baton-start.cmd，2026-09-28 删除）依赖继承。它在 ~/.baton/
 # daemon.log 里留下的两次启动记录**都缺这个变量**。这里改成从注册表的用户作用域
@@ -171,6 +171,7 @@ Set-Location $repo
 #   - 这个脚本本身被杀掉了：要真的停掉 Baton，先杀这个 pwsh，再杀 node
 #
 # **要重启守护进程（比如更新了代码）：只杀 node 那个进程**，这里会在一两秒内拉起新的。
+$env:BATON_CODEX_LOGIN_ENV = '1'
 $cliArgs = @('src/cli.js', 'start')
 if ($Port -gt 0) { $cliArgs += @('--port', "$Port") }
 if ($HostAddr) { $cliArgs += @('--host', $HostAddr) }

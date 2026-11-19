@@ -135,11 +135,11 @@ export async function writePermission({ principal, agent, mode, sandbox = codexS
  * 没跑过」区别开：后者选中后失败时，人才知道该去怀疑中转而不是怀疑 Baton。
  */
 export async function listModels({
-  discover = discoverModels, claude = claudeDefaults, agCatalog = antigravityCatalog, waitMs = 12_000,
+  discover = discoverModels, claude = claudeDefaults, agCatalog = antigravityCatalog, waitMs = 12_000, force = false,
 } = {}) {
   let m;
   try {
-    m = await discover();
+    m = await discover({ force });
   } catch {
     // 扫盘失败不是致命的：返回空表，UI 退回手输，功能仍然可用
     m = { claude: [], codex: [], antigravity: [] };

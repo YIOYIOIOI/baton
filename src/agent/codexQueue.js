@@ -22,6 +22,7 @@
 // 参数形状来自 `codex app-server generate-json-schema --experimental`（ThreadQueueAddParams）。
 
 import { spawn } from 'node:child_process';
+import { cliLaunch, spawnCodexAppServer } from './codexRuntime.js';
 import { randomUUID } from 'node:crypto';
 import { killChildTree } from './spawn.js';
 import { VERSION } from '../version.js';
@@ -29,19 +30,14 @@ import { VERSION } from '../version.js';
 /**
  * 往一个会话的 codex 队列里放一条文本消息。成功回 `{ id }`（队列项 id，撤回时用）。
  *
- * 和 agent/spawn.js 同一套启动方式（Windows 上 codex 是 .cmd，必须经 shell；POSIX 设
- * detached 并复用 killChildTree 以避免遗留 app-server 孤儿进程）。
+ * 与模型目录和轮次共用 CLI，并复用 killChildTree 以避免遗留 app-server 孤儿进程。
  */
-export function queueToCodexApp({
+export async function queueToCodexApp({
   threadId, text, command = 'codex', timeoutMs = 30_000, spawnFn = spawn,
 }) {
+  const launch = await cliLaunch(command);
   return new Promise((resolve, reject) => {
-    const child = spawnFn(command, ['app-server'], {
-      shell: process.platform === 'win32',
-      windowsHide: true,
-      stdio: ['pipe', 'pipe', 'ignore'],
-      ...(process.platform !== 'win32' ? { detached: true } : {}),
-    });
+    const child = spawnCodexAppServer(launch, spawnFn);
     let buf = '';
     let done = false;
     const finish = (fn, v) => {

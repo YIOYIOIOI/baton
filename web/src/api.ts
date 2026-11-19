@@ -252,7 +252,7 @@ export const api = {
       body: JSON.stringify({ turnId }),
     }),
 
-  models: () => request<Models>('/api/models'),
+  models: (refresh = false) => request<Models>(`/api/models${refresh ? '?refresh=1' : ''}`),
 
   /** 权限档位。**一次返回两个 agent**——切 agent 时不该闪一帧旧值（见后端抬头）。 */
   permission: () => request<Permission>('/api/permission'),

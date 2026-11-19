@@ -101,6 +101,7 @@ export function SessionConfig(props: Props) {
   const [err, setErr] = useState<ApiError | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [modelRefresh, setModelRefresh] = useState(0);
 
   const load = useCallback(() => {
     // 没绑会话就没有 state 可读——模型和强度由调用方以 prop 给
@@ -109,13 +110,18 @@ export function SessionConfig(props: Props) {
         .then((s) => { stateMemo.set(sessionKey, s); setState(s); })
         .catch(() => setState(null));
     }
-    api.models()
-      .then((m) => { modelsMemo = m; setModels(m[agent] ?? []); setCfg(m.config?.[agent] ?? null); })
-      .catch(() => setModels((prev) => prev ?? []));
     api.permission().then((p) => { permMemo = p; setPerm(p); }).catch(() => setPerm((prev) => prev));
   }, [sessionKey, agent]);
 
   useEffect(load, [load]);
+
+  useEffect(() => {
+    let current = true;
+    api.models(modelRefresh > 0)
+      .then((m) => { if (current) { modelsMemo = m; setModels(m[agent] ?? []); setCfg(m.config?.[agent] ?? null); } })
+      .catch(() => { if (current) setModels((prev) => prev ?? []); });
+    return () => { current = false; };
+  }, [agent, modelRefresh]);
 
   // 在这里改了模型、强度之后，缓存里那份跟着变，免得回来时先闪一下旧的
   useEffect(() => {
@@ -219,7 +225,7 @@ export function SessionConfig(props: Props) {
         className={`cfg-bar${open ? ' is-open' : ''}`}
         aria-haspopup="dialog"
         aria-expanded={open}
-        onClick={() => setOpen(true)}
+        onClick={() => { setOpen(true); setModelRefresh((revision) => revision + 1); }}
       >
         <span className="cfg-agent">{agent}</span>
         {/* null = 没选过。「没选过」与「选了正好等于默认」要显示得不一样：

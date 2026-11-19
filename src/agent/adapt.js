@@ -92,18 +92,24 @@ function summarizeCodex(records, stderr) {
   for (const r of records) {
     if (r.type === 'thread.started' && r.thread_id) sessionId = r.thread_id;
     if (r.type === 'error' && typeof r.message === 'string') lastError = r.message;
+    if (r.type === 'turn.failed' && typeof r.error?.message === 'string') lastError = r.error.message;
     if (r.type === 'item.completed') eventCount += 1;
     if (r.type === 'turn.completed') completed = r;
   }
   if (completed) {
     return { status: 'ok', sessionId, tokens: completed.usage ?? null, eventCount, error: null };
   }
+  let reason = lastError ?? stderrReason(stderr) ?? NO_TERMINAL;
+  if (/\bmodel_not_found\b|model is not supported when using Codex/i.test(reason)) {
+    reason = parse([reason])[0]?.error?.message || reason;
+    reason += '\n请打开模型菜单，选择当前账号支持的模型或「默认」，然后重新发送。';
+  }
   return {
     status: 'failed',
     sessionId,
     tokens: null,
     eventCount,
-    error: lastError ?? stderrReason(stderr) ?? NO_TERMINAL,
+    error: reason,
     // 拿不到写入锁：调用方据此改走「交给 Codex App 排队」（agent/codexQueue.js）
     lockHeld: !lastError && eventCount === 0 && WRITER_LOCK.test(String(stderr ?? '')),
   };
