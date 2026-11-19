@@ -184,7 +184,7 @@ export function buildRoutes({ auth }) {
       method: 'GET',
       match: (p) => (p === '/api/models' ? true : null),
       probe: () => '/api/models',
-      run: async () => listModels(),
+      run: async ({ query }) => listModels({ force: query.get('refresh') === '1' }),
     },
     {
       // 两个 agent 的套餐额度（src/usage.js）。**owner 专属**：那是 owner 账号的额度。

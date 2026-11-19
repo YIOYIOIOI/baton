@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useConnection } from '@/store/connection';
+import type { Client } from '@/api/client';
 import type { Agent, AgentConfig, ModelList } from '@/api/types';
 
 /**
@@ -20,20 +21,22 @@ import type { Agent, AgentConfig, ModelList } from '@/api/types';
  * 所以配置面板里保留了「跟这台电脑的默认」这一档兜底。
  */
 
-/** 进程内缓存一次。模型表变动极少，而每进一个会话都重拉是白费一次往返。 */
-let cached: ModelList | null = null;
-
 export function useModels() {
   const client = useConnection((s) => s.client);
-  const [data, setData] = useState(cached);
+  const [result, setResult] = useState<{ client: Client; models: ModelList } | null>(null);
+  const [revision, setRevision] = useState(0);
+  const refresh = useCallback(() => setRevision((value) => value + 1), []);
+  const data = result && result.client === client ? result.models : null;
 
   useEffect(() => {
-    if (!client || cached) return;
-    client.models()
-      .then((r) => { cached = r; setData(r); })
+    if (!client) return;
+    let current = true;
+    client.models(revision > 0)
+      .then((models) => { if (current) setResult({ client, models }); })
       // 拿不到就空表，UI 退回手输。这不是需要报错打断用户的事。
       .catch(() => {});
-  }, [client]);
+    return () => { current = false; };
+  }, [client, revision]);
 
   const forAgent = useCallback(
     (a: Agent) => data?.[a] ?? [],
@@ -49,5 +52,5 @@ export function useModels() {
     [data],
   );
 
-  return { for: forAgent, config: configFor, note: data?.note ?? null };
+  return { for: forAgent, config: configFor, refresh, note: data?.note ?? null };
 }

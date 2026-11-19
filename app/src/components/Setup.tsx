@@ -58,7 +58,7 @@ const EFFORT_NAME: Record<string, string> = {
 type Page = 'main' | 'model' | 'moreModels' | 'effort' | 'perm';
 
 export function SetupPill({
-  agent, onAgent, model, modelOptions, onModel, effort, onEffort,
+  agent, onAgent, model, modelOptions, onModel, onOpenModels, effort, onEffort,
   config = { effort: null, contextWindow: null }, width = SHEET_W,
 }: {
   agent: Agent;
@@ -66,6 +66,7 @@ export function SetupPill({
   onAgent?: (a: Agent) => void;
   model: string | null;
   modelOptions: ModelOption[];
+  onOpenModels: () => void;
   onModel: (m: string | null) => void;
   effort: Effort | null;
   onEffort: (e: Effort | null) => void;
@@ -176,7 +177,7 @@ export function SetupPill({
         // 药丸上只报**权限**这一项，因为只有它的取值会让人想立刻知道。
         // 模型名太长、思考强度不危险——全塞上去就成了一串谁也不看的字。
         dim={isEn && permValue === '默认' ? 'Default' : permValue}
-        onPress={() => setOpen(true)}
+        onPress={() => { setOpen(true); onOpenModels(); }}
         style={permOption?.danger ? s.hot : undefined}
       />
 

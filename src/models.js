@@ -1,26 +1,16 @@
 import fs from 'node:fs';
+import { createHash } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import { codexCatalog, claudeCatalog, cachedAntigravityCatalog, displayName } from './agent/catalog.js';
 import { EFFORTS } from './agent/args.js';
+import { codexRuntime } from './agent/codexRuntime.js';
 
 /**
  * 可选模型从**这台机器自己**推出来，不写死一张表。
  *
- * 依据是实测，不是偏好：当用户通过第三方 API 中转运行时，
- *   Claude  → relay gateway（可配置任意 ANTHROPIC_BASE_URL + 模型名）
- *   Codex   → relay endpoint（可配置任意 OPENAI_BASE_URL + 模型名）
- * 写死官方名会选不中中转模型；写死某台机器的名字换台机器又全错。所以只能现推。
- *
- * 证据按可信度排：
- *   1. **transcript 里跑过的**——最硬，跑过就说明中转认这个名字
- *   2. 配置里写的默认值——owner 自己填的，大概率有效，但没被验证过
- * 两者都拿不到时返回空表，由 UI 退回「手输」——一个缺了你要的那个的下拉框，
- * 比没有下拉框更糟。
- *
- * 2026-11-03 起 Claude 这边换成了账号登录，上面那句「两边都走中转」只对 Codex
- * 还成立。「跑过」只证明当时那个供应商认它，所以 Claude 的候选要按**现在**走哪条路
- * 筛一遍，见 claudeRoute。
+ * Codex 优先使用当前 CLI 的目录；配置和会话记录补充候选，但历史模型不代表当前账号可用。
+ * Claude 按当前登录或中转配置筛选，见 claudeRoute。目录不完整时仍允许手输模型名。
  */
 
 // 模型名的合法字符集与 agent/args.js 的 assertModel 保持一致。
@@ -43,11 +33,15 @@ function safeRead(p) {
   }
 }
 
-/** `~/.codex/config.toml` 里的 model / review_model。粗解析：只认顶层 `key = "value"`。 */
+function codexTopLevel(toml) {
+  return String(toml ?? '').split(/^\s*\[/m, 1)[0];
+}
+
+/** 从 Codex 配置中读取顶层 model / review_model。 */
 export function modelsFromCodexConfig(toml) {
   const out = [];
-  for (const line of String(toml ?? '').split('\n')) {
-    const m = /^\s*(model|review_model)\s*=\s*"([^"]*)"/.exec(line);
+  for (const line of codexTopLevel(toml).split('\n')) {
+    const m = /^\s*(?:model|review_model)\s*=\s*(["'])(.*?)\1/.exec(line);
     if (m && ok(m[2])) out.push(m[2]);
   }
   return out;
@@ -76,12 +70,10 @@ export function codexPrefsFromConfig(toml) {
     找第一个匹配，会把它当成默认报出去。（`profile = "x"` 选中 profile 的情况
     这里不处理：本机没用，用了的话如实报顶层那份，不猜。）
   */
-  const all = String(toml ?? '');
-  const firstTable = all.search(/^\s*\[/m);
-  const text = firstTable < 0 ? all : all.slice(0, firstTable);
+  const text = codexTopLevel(toml);
   const str = (key) => {
-    const m = new RegExp(`^\\s*${key}\\s*=\\s*"([^"]*)"`, 'm').exec(text);
-    return m ? m[1] : null;
+    const match = new RegExp(`^\\s*${key}\\s*=\\s*(["'])(.*?)\\1`, 'm').exec(text);
+    return match?.[2] ?? null;
   };
   const num = (key) => {
     const m = new RegExp(`^\\s*${key}\\s*=\\s*(\\d+)`, 'm').exec(text);
@@ -217,6 +209,22 @@ export function scanRecent(dir, { max = 10, skip, readFile = readBoundedSample }
 }
 
 let cache = null;
+let pendingCatalog = null;
+
+function fileStamp(file) {
+  try {
+    const stat = fs.statSync(file, { throwIfNoEntry: false, bigint: true });
+    return stat ? `${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}` : '';
+  } catch {
+    return '';
+  }
+}
+
+function providerFingerprint(env, toml) {
+  const names = new Set(Object.keys(env).filter((name) => /^(OPENAI_|CODEX_API_KEY$)/i.test(name)));
+  for (const match of toml.matchAll(/^\s*env_key\s*=\s*["']([A-Za-z_][A-Za-z0-9_]*)["']/gm)) names.add(match[1]);
+  return createHash('sha256').update(JSON.stringify([toml, ...[...names].sort().map((name) => [name, env[name]])])).digest('hex');
+}
 
 /**
  * Claude 这一轮打到哪儿：`official`（账号登录，直连 Anthropic）或 `relay`（中转）。
@@ -446,26 +454,37 @@ export async function discoverModels({
   const claudeSettings = read(path.join(claudeDir, 'settings.json'));
   // 每次都判：在 settings.json 里切了供应商，不该等缓存过期才反映出来
   const route = claudeRoute({ env, settings: claudeSettings });
-  if (!force && cache && cache.route === route && now - cache.at < ttlMs) return cache.value;
+  const runtime = await codexRuntime(env);
+  const codexDir = runtime.env.CODEX_HOME || path.join(home, '.codex');
+  const codexToml = read(path.join(codexDir, 'config.toml')) ?? '';
+  const key = JSON.stringify([claudeDir, route, codexDir, runtime.command,
+    providerFingerprint(runtime.env, codexToml), fileStamp(path.join(codexDir, 'auth.json'))]);
+  const catalogFile = path.join(codexDir, 'models_cache.json');
+  if (!force && cache?.key === key && cache.catalogStamp === fileStamp(catalogFile) && now - cache.at < ttlMs) return cache.value;
 
   // subagents/ 下是子 agent 追踪，不是主会话。
   // 它们的模型可能被强制成小模型，混进来会让人以为主会话也能选。
   const seenClaude = scanRecent(path.join(claudeDir, 'projects'), {
     skip: (p) => p.includes(`${path.sep}subagents${path.sep}`),
   });
-  const seenCodex = scanRecent(path.join(home, '.codex', 'sessions'));
+  const seenCodex = scanRecent(path.join(codexDir, 'sessions'));
 
   const cfgClaude = modelsFromClaudeSettings(claudeSettings);
   // 直连 Anthropic 时，中转那边跑过的别家模型选了必失败，不列。走中转时不筛：
   // 中转认什么名字只有它自己知道，「跑过」仍是最硬的证据
   const forRoute = (ids) => (route === 'official' ? ids.filter(anthropicName) : ids);
-  const codexToml = read(path.join(home, '.codex', 'config.toml'));
   const cfgCodex = modelsFromCodexConfig(codexToml);
   const codexPrefs = codexPrefsFromConfig(codexToml);
 
   let cat = [];
   try {
-    cat = await catalog();
+    if (pendingCatalog?.key !== key || pendingCatalog.catalog !== catalog) {
+      const result = Promise.resolve().then(() => catalog({ runtime })).finally(() => {
+        if (pendingCatalog?.result === result) pendingCatalog = null;
+      });
+      pendingCatalog = { key, catalog, result };
+    }
+    cat = (await pendingCatalog.result).filter((entry) => ok(entry.id));
   } catch {
     cat = []; // 目录是锦上添花，拿不到就当没有
   }
@@ -507,7 +526,8 @@ export async function discoverModels({
       route, seen: forRoute(seenClaude), cfg: forRoute(cfgClaude), cat: claudeCat({ home, configDir: claudeDir }), merge,
       settings: claudeSettings,
     }),
-    codex: merge(seenCodex, cat, cfgCodex),
+    codex: merge(seenCodex, cat, cfgCodex).map((entry) =>
+      cat.length && !entry.listed && !cfgCodex.includes(entry.id) ? { ...entry, hidden: true } : entry),
     antigravity: agList,
     /**
      * 这台电脑上**已经配好**的东西。界面据此说「跟这台电脑的设置走（现在是 X）」
@@ -544,7 +564,7 @@ export async function discoverModels({
       },
     },
   };
-  cache = { at: now, route, value };
+  cache = { at: now, key, catalogStamp: fileStamp(catalogFile), value };
   return value;
 }
 
