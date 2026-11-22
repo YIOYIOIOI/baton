@@ -1,4 +1,6 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { getBrowserLock, onBrowserLock } from '../../app/src/store/browserSession';
+import { watchCreation, type CreationReceipt } from '../../app/src/api/creationStatus';
 import { ApiError, api, type Agent } from './api';
 import { DirPicker } from './DirPicker';
 import { translate, useI18n, type Locale } from './i18n';
@@ -10,7 +12,7 @@ import { SessionConfig } from './SessionConfig';
 import { DraftAttachments } from './Attachments';
 import { pastedName } from './useFileDrop';
 import { attachmentSuffix, isImageName } from './attach';
-import { NEW_SESSION_DRAFT, loadDraft, saveDraft } from './drafts';
+import { NEW_SESSION_DRAFT, useDraft } from './drafts';
 import './new.css';
 
 /**
@@ -95,11 +97,7 @@ export function NewSession() {
   const [model, setModel] = useState<string | null>(null);
   const [effort, setEffort] = useState<string | null>(null);
   // 草稿存在这一页之外，离开再回来还在（见 drafts.ts）。建成之后清掉
-  const [draft, setDraftState] = useState(() => loadDraft(NEW_SESSION_DRAFT));
-  const setDraft = (v: string) => {
-    setDraftState(v);
-    saveDraft(NEW_SESSION_DRAFT, v);
-  };
+  const [draft, setDraft] = useDraft(NEW_SESSION_DRAFT);
   /**
    * 还没传上去的附件（见 create 抬头）。File 留在本地，点发送才上传。
    *
@@ -117,6 +115,20 @@ export function NewSession() {
   const [cwds, setCwds] = useState<string[] | null>(null);
   const [canWrite, setCanWrite] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [receipt, setReceipt] = useState<(CreationReceipt & { error?: string }) | null>(null);
+  const active = useRef(false);
+  useEffect(() => { active.current = true; return () => { active.current = false; }; }, []);
+  useEffect(() => {
+    if (!receipt || receipt.error !== undefined || getBrowserLock()) return;
+    const stop = watchCreation(receipt, api.creationStatus, (key) => {
+      if (active.current && !getBrowserLock()) {
+        window.dispatchEvent(new Event('baton:sessions'));
+        navigate('/session/' + encodeURIComponent(key));
+      }
+    }, (error) => { if (active.current && !getBrowserLock()) setReceipt({ ...receipt, error }); });
+    const off = onBrowserLock(() => { if (getBrowserLock()) { stop(); setReceipt(null); } });
+    return () => { stop(); off(); };
+  }, [receipt]);
   const [err, setErr] = useState<ApiError | null>(null);
   const [picking, setPicking] = useState(false);
   /**
@@ -240,19 +252,19 @@ export function NewSession() {
       const message = text ? text + suffix : suffix.trimStart();
 
       const r = await api.createSession({ agent, cwd: target, message, model, effort });
+      if (!active.current || getBrowserLock()) return;
       setDraft('');
+      if (r.status === 'unconfirmed' && r.turnId) {
+        for (const it of next) if (it.preview?.startsWith('blob:')) URL.revokeObjectURL(it.preview);
+        setStaged([]);
+        setReceipt({ turnId: r.turnId, statusUrl: r.statusUrl });
+        return;
+      }
 
-      /*
-       * **建会话的响应里没有 `key`**，只有 provider 的 `sessionId`（见 api.ts 的
-       * Created）。Baton 的 key 由文件相对路径编码而来，建之前不存在——服务端
-       * 自己也是建完重扫仓库按 providerId 找回它的。这里照做。
-       *
-       * 找不到就退回列表而不是硬跳：会话文件可能还没落地（服务端那段也用
-       * `if (landed)` 兜着）。跳到一个不存在的 key 只会给一个「找不到会话」，
-       * 而列表里那条大概率已经在了。
-       */
-      const list = await api.sessions();
-      const hit = list.chains.flatMap((c) => c.members).find((m) => m.providerId === r.sessionId);
+      // 旧版只提供 provider 的 sessionId，向会话列表反查它对应的文件。
+      const key = r.key ?? (r.sessionId
+        ? (await api.sessions()).chains.flatMap((c) => c.members).find((m) => m.providerId === r.sessionId)?.key : null);
+      if (!active.current || getBrowserLock()) return;
 
       /*
        * 让外壳重新拉一次列表。
@@ -266,7 +278,7 @@ export function NewSession() {
         if (it.preview?.startsWith('blob:')) URL.revokeObjectURL(it.preview);
       }
       window.dispatchEvent(new Event('baton:sessions'));
-      navigate(hit ? `/session/${encodeURIComponent(hit.key)}` : '/');
+      navigate(key ? `/session/${encodeURIComponent(key)}` : '/');
     } catch (e) {
       setErr(e as ApiError);
       setBusy(false);
@@ -287,6 +299,15 @@ export function NewSession() {
     }
   }
 
+  if (receipt) return (
+    <div className="compose"><div className="new-stack" role="status">
+      <p>{receipt.error !== undefined
+        ? receipt.error || (locale === 'en' ? 'This receipt is unavailable.' : '当前无法查看这张回执。')
+        : locale === 'en' ? 'Checking whether Antigravity Desktop created your session…' : '正在核对 Antigravity 桌面端是否已建好会话…'}</p>
+      <p className="dim">{locale === 'en' ? 'Request' : '查询编号'} <code>{receipt.turnId}</code></p>
+      <button className="ghost" type="button" onClick={() => navigate('/')}>{locale === 'en' ? 'Back to sessions' : '返回会话列表'}</button>
+    </div></div>
+  );
   return (
     <div className="compose">
       {/* 问候与输入框是**一组**，一起垂直居中。分开居中的话草稿变长时

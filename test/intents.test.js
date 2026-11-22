@@ -80,21 +80,20 @@ const SEND_ON = { allowSend: true };
 const runningOf = (...ids) => () => ids.map((turnId) => ({ turnId, status: 'running' }));
 const noAsk = { pending: () => null, cancel: () => {} };
 
-test('stopTurn 先落盘意图，有句柄时立刻杀进程并消费意图', () => {
-  const written = [];
-  const consumed = [];
+test('stopTurn 先记录停止请求，执行器确认结束前保留句柄', () => {
+  const seen = [];
   let killed = false;
-  const live = new Map([['t1', { kill: () => { killed = true; } }]]);
+  const live = new Map([['t1', { kill: () => { seen.push('kill'); killed = true; } }]]);
   const r = stopTurn({
     repo: repoOk, config: SEND_ON, key: KEY, turnId: 't1', live, asks: noAsk,
-    intents: { write: (i) => written.push(i), consume: (i) => consumed.push(i) },
-    turns: { end: () => {}, list: runningOf('t1') },
+    turns: { control: () => seen.push('record'), list: runningOf('t1') },
   });
   assert.equal(r.status, 202);
-  assert.equal(r.body.stopped, true);
+  assert.equal(r.body.stopped, false);
+  assert.equal(r.body.stopping, true);
   assert.equal(killed, true);
-  assert.equal(written.length, 1, '意图必须先落盘——本进程随后崩掉也不能丢');
-  assert.equal(live.has('t1'), false);
+  assert.deepEqual(seen, ['record', 'kill']);
+  assert.equal(live.has('t1'), true);
 });
 
 test('stopTurn 没有句柄时把意图留在盘上并说清后果', () => {
@@ -126,7 +125,7 @@ function stopWith(over) {
   const r = stopTurn({
     repo: repoOk, config: SEND_ON, key: KEY, turnId: 't1', live,
     intents: { write: () => { seen.written += 1; }, consume: () => {} },
-    turns: { end: () => {}, list: runningOf('t1') },
+    turns: { control: () => { seen.written += 1; }, list: runningOf('t1') },
     asks: { pending: () => ({ turnId: 't1' }), cancel: () => { seen.cancelled += 1; } },
     ...over,
   });

@@ -77,6 +77,10 @@ test('POST /api/pair 用配对码换 cookie', async () => {
     });
     assert.equal(res.status, 200);
     assert.match(res.headers.get('set-cookie'), /baton_session=.*HttpOnly/);
+    const receipt = await res.json();
+    assert.match(receipt.deviceId, /^[A-Za-z0-9_-]{16}$/);
+    const checked = await fetch(`${base}/api/health`, { headers: { cookie: res.headers.get('set-cookie').split(';')[0] } });
+    assert.equal((await checked.json()).deviceId, receipt.deviceId);
   });
 });
 

@@ -1,9 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import path from 'node:path';
 import { createSession } from '../src/http/handlers/create.js';
 import { visibleCwds, listSessions } from '../src/http/handlers/sessions.js';
 import { sendMessage, stopTurn, liveTurns } from '../src/http/handlers/turns.js';
+import { listTurns } from '../src/runtime/turns.js';
 import { buildClaudeNewArgs, buildCodexNewArgs } from '../src/agent/args.js';
 import { tmpDir } from './helpers.js';
 
@@ -214,10 +216,37 @@ test('新建：第一轮能停', { timeout: 5000 }, async () => {
   const w = world({ finish: () => first.promise });
   const r = await createSession({ ...base(), repo: w.repo, runner: w.runner, agent: 'claude', cwd: CWD, registrar: () => 'x' });
   const s = stopTurn({ repo: w.repo, config: { allowSend: true }, key: r.body.key, turnId: r.body.turnId });
-  assert.equal(s.body.stopped, true);
+  assert.equal(s.body.stopped, false);
+  assert.equal(s.body.stopping, true);
   assert.equal(w.killed, 1);
+  assert.equal(listTurns(r.body.key).at(-1).status, 'running');
   first.resolve({ code: 1, lines: [], summary: { status: 'failed', error: 'killed' } });
   await r.settled;
+  assert.equal(listTurns(r.body.key).at(-1).status, 'aborted');
+});
+
+test('落地轮询遇到转录轮转会重试，已启动的轮次只登记一次', { timeout: 4000 }, async () => {
+  const done = deferred();
+  const w = world({ finish: () => done.promise });
+  const list = w.repo.listChains;
+  let scans = 0;
+  w.repo.listChains = () => {
+    if (++scans === 1) throw Object.assign(new Error('transcript moved'), { code: 'ENOENT' });
+    return list();
+  };
+  try {
+    const r = await createSession({
+      ...base(), repo: w.repo, runner: w.runner, agent: 'claude', cwd: CWD,
+      registrar: () => null, pollMs: 5,
+    });
+    assert.ok(r.body.key);
+    assert.ok(scans >= 2);
+    done.resolve(OK);
+    await r.settled;
+    assert.equal(listTurns(r.body.key).length, 1);
+  } finally {
+    done.resolve(OK);
+  }
 });
 
 test('新建：落地之前 agent 就退出了，把它的报错如实回给客户端', async () => {
@@ -268,6 +297,15 @@ test('访客不能在自己 roots 之外新建', async () => {
   assert.equal(r.status, 403);
   assert.equal(r.body.error.code, 'cwd_not_allowed');
   assert.match(r.body.error.fix, /工作区/);
+});
+
+test('新建会话拒绝实际工作目录在授权范围之外的别名', async () => {
+  const root = tmpDir();
+  const cwd = path.join(root, 'project');
+  fs.symlinkSync(tmpDir(), cwd, process.platform === 'win32' ? 'junction' : 'dir');
+  const result = await createSession({ ...base(), cwd, agent: 'claude', principal: { id: 'friend', roots: [root] } });
+  assert.equal(result.status, 403);
+  assert.equal(result.body.error.code, 'cwd_not_allowed');
 });
 
 test('访客在自己 roots 之下可以新建', async () => {

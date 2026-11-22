@@ -44,12 +44,13 @@
 # 只看会做什么、不启动：pwsh -NoProfile -File scripts\start-daemon.ps1 -DryRun
 # （只列变量名，不打印值）
 
-param([switch]$DryRun, [int]$Port = 0, [string]$HostAddr = '', [switch]$ReadOnly)
+param([switch]$DryRun, [ValidateRange(0, 65535)][int]$Port = 0, [string]$HostAddr = '', [switch]$ReadOnly)
 
 $ErrorActionPreference = 'Stop'
 
 # 仓库根 = 本脚本所在目录的上一级。不写死路径：仓库挪了位置照样能用
 $repo = Split-Path -Parent $PSScriptRoot
+. (Join-Path $PSScriptRoot 'windows-supervision.ps1')
 
 $family = '^(ANTHROPIC_|CLAUDE|_CLAUDE_CODE_|CODEX_|OPENAI_|ANTIGRAVITY_|AGY_)'
 $names = @(
@@ -82,16 +83,17 @@ if ($DryRun) {
 
 # 数据目录与端口跟守护进程读的是同一份（BATON_DIR 可覆盖，端口看 config.json）
 $dataDir = if ($env:BATON_DIR) { $env:BATON_DIR } else { Join-Path $env:USERPROFILE '.baton' }
-$port = 3002
+$dataDir = [IO.Path]::GetFullPath($dataDir)
+$cfg = $null
 try {
   $cfg = Get-Content (Join-Path $dataDir 'config.json') -Raw -ErrorAction Stop | ConvertFrom-Json
-  if ($cfg.port) { $port = [int]$cfg.port }
 } catch {
   # 没有或坏了：守护进程自己也会退回默认 3002
 }
-if ($Port -gt 0) { $port = $Port }
+$endpoint = Resolve-BatonEndpoint $Port $HostAddr $cfg
+$effectivePort = $endpoint.Port
 
-function Listening { [bool](Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue) }
+function Listening { [bool](Get-NetTCPConnection -LocalPort $effectivePort -State Listen -ErrorAction SilentlyContinue) }
 
 # 看门狗（watchdog.ps1）没在跑就把它拉起来：它管守护进程，守护进程每次起来时管它，互相兜底。
 # 放在「已经有一个在跑」的判断之前：守护进程好好的、看门狗却没了，也该补上。
@@ -109,7 +111,7 @@ if (Get-CimInstance Win32_Process -Filter "Name='pwsh.exe'" | Where-Object { $_.
 # 已经有一个在跑了就什么都不做。**必须在碰日志之前判**：否则第二个会把第一个正在
 # 写的日志挪走。重复双击快捷方式、或者自启时手动开着的那个还在，都会走到这里。
 if (Listening) {
-  Write-Host "  端口 $port 上已经有守护进程在跑了，这个不再启动。要重启它：只杀掉 node 那个进程，外层循环会自己拉起来。"
+  Write-Host "  端口 $effectivePort 已有进程监听，跳过启动。"
   exit 0
 }
 
@@ -172,10 +174,11 @@ Set-Location $repo
 #
 # **要重启守护进程（比如更新了代码）：只杀 node 那个进程**，这里会在一两秒内拉起新的。
 $env:BATON_CODEX_LOGIN_ENV = '1'
-$cliArgs = @('src/cli.js', 'start')
-if ($Port -gt 0) { $cliArgs += @('--port', "$Port") }
-if ($HostAddr) { $cliArgs += @('--host', $HostAddr) }
-if ($ReadOnly) { $cliArgs += '--read-only' }
+$env:BATON_DIR = $dataDir
+$env:BATON_WATCHDOG_MANAGED = '1'
+try { Write-BatonProcessRecord (Join-Path $dataDir 'daemon-wrapper.json') $PID $PSCommandPath $effectivePort $endpoint.Address }
+catch { Note '无法登记启动进程，看门狗将跳过对它的终止操作。' }
+$cliArgs = @(Get-BatonStartArguments (Join-Path $repo 'src/cli.js') $endpoint -ReadOnly:$ReadOnly)
 
 $fast = 0
 $round = 0
@@ -188,7 +191,7 @@ while ($true) {
   $code = $LASTEXITCODE
   $ran = [int]((Get-Date) - $t0).TotalSeconds
 
-  if (Listening) { Note "守护进程退出了（退出码 $code），但端口 $port 已经被别的进程占着，不再重启。"; break }
+  if (Listening) { Note "守护进程退出了（退出码 $code），但端口 $effectivePort 已被占用，停止重启。"; break }
   if ($ran -lt 30) { $fast += 1 } else { $fast = 0 }
   if ($fast -ge 5) { Note "守护进程连续 5 次起来不到 30 秒就退出，停止自动重启。看上面的报错。"; break }
   $wait = [Math]::Min(60, [Math]::Pow(2, $fast))

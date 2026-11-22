@@ -35,7 +35,7 @@
   <img src="docs/assets/hero-showcase.png" alt="Baton Desktop Web UI and Mobile PWA running against a shared local session" width="100%">
 </p>
 
-**Baton** turns your development workstation into a private remote workspace for **Claude Code**, **OpenAI Codex**, and **Gemini Antigravity** — **zero cloud relay, zero database, zero external daemon dependencies, and API-relay friendly**.
+**Baton** turns your development workstation into a private remote workspace for **Claude Code**, **OpenAI Codex**, and **Gemini Antigravity**. It supports API relays and runs without a cloud relay or a separate database server. Baton stores its state locally in JSON and SQLite files.
 
 It reads real session transcripts directly from disk, streams live turns over Server-Sent Events (SSE), bridges interactive approvals and `AskUserQuestion` prompts, and serves a tailored **Desktop Web UI** (`web/`) and **Mobile / PWA UI** (`app/`) from a single lightweight Node.js `>= 24` process.
 
@@ -124,7 +124,7 @@ baton pair [--for <principal-id>]
 | **Session Discovery** | Desktop registry + JSONL | `session_index` + rollout JSONL | `conversation_summaries.db` + bridge |
 | **Execution & Streaming** | `stream-json` tail | App-server JSON-RPC + `exec` | 3-channel hybrid (`baton-bridge` / `agy acp` / `stream-json`) |
 | **Questions & Approvals** | `AskUserQuestion` MCP bridge | RPC approval bridge | Bridge prompt forwarding |
-| **Busy Lock Handoff** | Per-session queue | Queues into live Codex App when lock held | Active run coordination |
+| **Busy Lock Handoff** | Per-session queue | Queues into the live Codex App when it holds the lock and the turn uses default permissions, model, and effort | Tracks desktop turns until completion |
 | **Models & Effort Controls** | Dynamic catalog + effort | Model catalog + effort | ACP catalog + 5-tier effort (`low`–`max`) |
 | **Live Usage Telemetry** | Yes (owner-only) | Yes (owner-only) | Yes (`agy --print=/usage`, owner-only) |
 | **Scoped Files & Uploads** | Contained to session `cwd` | Contained to session `cwd` | Contained to session `cwd` |

@@ -59,7 +59,7 @@ type Page = 'main' | 'model' | 'moreModels' | 'effort' | 'perm';
 
 export function SetupPill({
   agent, onAgent, model, modelOptions, onModel, onOpenModels, effort, onEffort,
-  config = { effort: null, contextWindow: null }, width = SHEET_W,
+  config = { effort: null, contextWindow: null }, width = SHEET_W, readOnlyPreferences = false,
 }: {
   agent: Agent;
   /** 不传 = 这一屏不能换 agent（会话已经建在某个 agent 上了，换不了）。 */
@@ -70,6 +70,7 @@ export function SetupPill({
   onModel: (m: string | null) => void;
   effort: Effort | null;
   onEffort: (e: Effort | null) => void;
+  readOnlyPreferences?: boolean;
   /**
    * 这台电脑上已经配好的强度与上下文窗口。**如实转述，不做判断**——
    * owner：「我们只要保证正确读取用户的模型配置、思考强度、上下文窗口」。
@@ -208,8 +209,10 @@ export function SetupPill({
               ) : null}
 
               <GroupH>模型</GroupH>
+              {readOnlyPreferences ? <SheetP>{isEn ? 'Model and effort are read-only.' : '当前身份只能查看模型和思考强度。'}</SheetP> : null}
               <SelectList
                 options={modelItems}
+                disabled={readOnlyPreferences}
                 value={model ?? ''}
                 onPick={(id) => onModel(id || null)}
               />
@@ -261,6 +264,7 @@ export function SetupPill({
           {page === 'moreModels' ? (
             <SelectList
               options={hiddenOnes.map((m) => ({ id: m.id, label: m.name, body: m.desc }))}
+              disabled={readOnlyPreferences}
               value={model ?? ''}
               onPick={(id) => { onModel(id || null); setPage('main'); }}
             />
@@ -269,6 +273,7 @@ export function SetupPill({
           {page === 'effort' ? (
             <>
               <SelectList
+                disabled={readOnlyPreferences}
                 options={[
                   {
                     id: '',

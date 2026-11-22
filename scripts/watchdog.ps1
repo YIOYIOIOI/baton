@@ -45,9 +45,15 @@ param(
 $ErrorActionPreference = 'Continue'
 
 $repo = Split-Path -Parent $PSScriptRoot
+. (Join-Path $PSScriptRoot 'windows-supervision.ps1')
 $dataDir = if ($env:BATON_DIR) { $env:BATON_DIR } else { Join-Path $env:USERPROFILE '.baton' }
+$wrapperRecord = Join-Path $dataDir 'daemon-wrapper.json'
+$nodeRecord = Join-Path $dataDir 'daemon-process.json'
+$wrapperEntry = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot 'start-daemon.ps1'))
+$nodeEntry = [IO.Path]::GetFullPath((Join-Path $repo 'src/cli.js'))
 $startup = [Environment]::GetFolderPath('Startup')
-$daemonLnk = Join-Path $startup 'Baton Daemon.lnk'
+$daemonLnk = Join-Path $startup 'Baton.cmd'
+if (!(Test-Path -LiteralPath $daemonLnk)) { $daemonLnk = Join-Path $startup 'Baton Daemon.lnk' }
 $log = Join-Path $dataDir 'watchdog.log'
 
 function LoadCfg {
@@ -74,27 +80,21 @@ $tunnelPattern = if ($env:BATON_TUNNEL_MATCH) {
   'cloudflared.*tunnel.*run'
 }
 
-function Port {
-  try {
-    $c = Get-Content (Join-Path $dataDir 'config.json') -Raw -ErrorAction Stop | ConvertFrom-Json
-    if ($c.port) { return [int]$c.port }
-  } catch {
-    # 没有或坏了：守护进程自己也会退回默认 3002
+function CurrentEndpoint($wrapper) {
+  if ($wrapper) { return Resolve-BatonEndpoint $wrapper.Record.port $wrapper.Record.address $null }
+  $daemon = Get-BatonOwnedProcess $nodeRecord $nodeEntry
+  if ($daemon) {
+    try { return Resolve-BatonEndpoint $daemon.Record.port $daemon.Record.address $null } finally { $daemon.Process.Dispose() }
   }
-  3002
+  return Resolve-BatonEndpoint 0 '' (LoadCfg)
 }
 
-function HostAddr {
-  try {
-    $c = Get-Content (Join-Path $dataDir 'config.json') -Raw -ErrorAction Stop | ConvertFrom-Json
-    $h = if ($c.host) { [string]$c.host } else { '127.0.0.1' }
-    if ($h -eq '0.0.0.0' -or $h -eq '::' -or [string]::IsNullOrWhiteSpace($h)) { return '127.0.0.1' }
-    $clean = $h.Trim().Trim('[', ']')
-    if ($clean -match ':') { return "[$clean]" }
-    return $clean
-  } catch {
-    return '127.0.0.1'
-  }
+function ProbeHost([string]$address) {
+  $clean = $address.Trim().Trim('[', ']')
+  if ($clean -eq '0.0.0.0' -or !$clean) { return '127.0.0.1' }
+  if ($clean -eq '::') { return '[::1]' }
+  if ($clean.Contains(':')) { return "[$clean]" }
+  return $clean
 }
 
 function Note($msg) {
@@ -111,9 +111,9 @@ function Listener($port) {
 }
 
 # 认的是 X-Baton 头，不是状态码：401 也是活着；而端口被别的东西占了时它不会带这个头
-function Healthy($port) {
+function Healthy($port, $address) {
   try {
-    $h = HostAddr
+    $h = ProbeHost $address
     $r = Invoke-WebRequest "http://${h}:$port/api/health" -TimeoutSec 5 -SkipHttpErrorCheck -ErrorAction Stop
     return [bool]$r.Headers['X-Baton']
   } catch {
@@ -132,10 +132,13 @@ function Launch($lnk) {
 }
 
 if ($Check) {
-  $port = Port
+  $wrapper = Get-BatonOwnedProcess $wrapperRecord $wrapperEntry -Wrapper
+  $endpoint = CurrentEndpoint $wrapper
+  $port = $endpoint.Port
   "端口 $port 有人听: $([bool](Listener $port))"
-  "/api/health 带 X-Baton: $(Healthy $port)"
-  "start-daemon.ps1 在跑: $(Running 'start-daemon\.ps1')"
+  "/api/health 带 X-Baton: $(Healthy $port $endpoint.Address)"
+  "start-daemon.ps1 在跑: $([bool]$wrapper)"
+  if ($wrapper) { $wrapper.Process.Dispose() }
   if ($tunnelLnk) { "隧道进程匹配 ($tunnelPattern): $(Running $tunnelPattern)" }
   exit 0
 }
@@ -159,28 +162,22 @@ function MayLaunch {
   return ((Get-Date) - $script:launches[-1]).TotalMinutes -ge 10
 }
 
-# 只认 Baton 自己的 node。端口被别的程序占着时它不带 X-Baton，会被当成「卡死」——不能去杀它
-function IsBaton($procId) {
-  $p = Get-CimInstance Win32_Process -Filter "ProcessId=$procId" -ErrorAction SilentlyContinue
-  [bool]($p -and $p.Name -eq 'node.exe' -and $p.CommandLine -match '(src[\\/]cli\.js|node_modules[\\/]baton[\\/]src[\\/]cli\.js)')
-}
-
 while ($true) {
-  $port = Port
-  $pid3002 = Listener $port
+  $wrapper = Get-BatonOwnedProcess $wrapperRecord $wrapperEntry -Wrapper
+  $endpoint = CurrentEndpoint $wrapper
+  $port = $endpoint.Port
+  $listenerId = Listener $port
 
-  if (-not $pid3002) {
+  if (-not $listenerId) {
     $hung = 0
     $down += 1
-    $wrapper = Running 'start-daemon\.ps1'
     # 外层循环还在：它可能在退避重启，多给它两轮
     $need = if ($wrapper) { 4 } else { 2 }
     if ($down -ge $need) {
       if (MayLaunch) {
         if ($wrapper) {
           Note "端口 $port 已连续 $down 次没人听，外层循环还在却没把它拉起来——结束外层循环，重新拉"
-          Get-CimInstance Win32_Process -Filter "Name='pwsh.exe'" | Where-Object { $_.CommandLine -match 'start-daemon\.ps1' } |
-            ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+          try { $wrapper.Process.Kill() } catch { Note "外层循环已退出或无法终止。" }
         } else {
           Note "端口 $port 已连续 $down 次没人听，守护进程不在——经 Baton Daemon.lnk 拉起"
         }
@@ -193,25 +190,27 @@ while ($true) {
         $lastState = 'backoff'
       }
     }
-  } elseif (-not (Healthy $port)) {
+  } elseif (-not (Healthy $port $endpoint.Address)) {
     $down = 0
     $hung += 1
     if ($hung -ge 4) {
-      if (IsBaton $pid3002) {
-        Note "端口 $port 有人听（pid $pid3002），但 /api/health 连续 $hung 次不回——判为卡死，结束 node，交给外层循环重启"
-        Stop-Process -Id $pid3002 -Force -ErrorAction SilentlyContinue
+      $owned = Get-BatonOwnedProcess $nodeRecord $nodeEntry -ListenerId $listenerId
+      if ($owned) {
+        Note "端口 $port 有人听（pid $listenerId），但 /api/health 连续 $hung 次不回——判为卡死，结束 node，交给外层循环重启"
+        try { $owned.Process.Kill() } catch { Note "守护进程已退出或无法终止。" } finally { $owned.Process.Dispose() }
         $lastState = 'killed-hung'
       } elseif ($lastState -ne 'foreign') {
-        Note "端口 $port 被别的程序占着（pid $pid3002，不是 Baton 的 node），不动它。Baton 起不来，得人来腾端口"
+        Note "端口 $port 被别的程序占着（pid $listenerId，不是 Baton 的 node），不动它。Baton 起不来，得人来腾端口"
         $lastState = 'foreign'
       }
       $hung = 0
     }
   } else {
-    if ($lastState -ne 'ok') { Note "守护进程正常（pid $pid3002）" }
+    if ($lastState -ne 'ok') { Note "守护进程正常（pid $listenerId）" }
     $down = 0; $hung = 0; $lastState = 'ok'
   }
 
+  if ($wrapper) { $wrapper.Process.Dispose() }
   if ($tunnelLnk -and (Test-Path $tunnelLnk)) {
     if (Running $tunnelPattern) {
       if ($tunnelDown -ge 2) { Note '隧道连接器回来了' }

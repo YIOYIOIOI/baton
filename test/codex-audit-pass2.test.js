@@ -11,20 +11,14 @@ import {
 import { scanText } from '../scripts/verify-oss-clean.mjs';
 import { scanFrom } from '../src/sessioninfo.js';
 import { createFollower } from '../src/follow.js';
-import { sendMessage } from '../src/http/handlers/turns.js';
-import { enqueue, listQueue, removeQueued } from '../src/runtime/queue.js';
+import { GOAL_CONTINUE, sendMessage } from '../src/http/handlers/turns.js';
+import { loadPrincipals } from '../src/principals.js';
+import { listQueue } from '../src/runtime/queue.js';
+import { listTurns } from '../src/runtime/turns.js';
 import { killChildTree, runProcess } from '../src/agent/spawn.js';
 import { uploadTarget } from '../src/upload.js';
 import { ensureKeys, notify, subscribe, unsubscribe } from '../src/push.js';
 import { tmpDir } from './helpers.js';
-
-function takeNextQueue(key, dir) {
-  const list = listQueue(key, { dir });
-  if (!list.length) return null;
-  const first = list[0];
-  removeQueued(key, first.id, { dir });
-  return first;
-}
 
 test('Pass2 #1 #3 #4: install-autostart decodes URL paths, blocks batch injection, forwards PS args, and start-daemon.ps1 parses cleanly', () => {
   const plist = buildLaunchdPlist();
@@ -59,7 +53,7 @@ test('Pass2 #1 #3 #4: install-autostart decodes URL paths, blocks batch injectio
 test('Pass2 #2 & #10: push pins lookup IP in requestImpl, cancels fetch body, and respects timeout', async () => {
   ensureKeys();
   const endpoint = 'https://push.example/pinned-test';
-  subscribe({ endpoint });
+  subscribe({ endpoint }, 'owner', 'push-test-dev002');
   try {
     let resolvedViaLookup = null;
     await notify({
@@ -73,7 +67,7 @@ test('Pass2 #2 & #10: push pins lookup IP in requestImpl, cancels fetch body, an
           setTimeout() {},
           on(ev, fn) { handlers[ev] = fn; },
           end() {
-            cb({ statusCode: 201, resume() {} });
+            cb({ statusCode: 201, destroy() {} });
           },
         };
       },
@@ -115,77 +109,64 @@ test('Pass2 #5: sessioninfo scanFrom reads chunk-straddling JSON without duplica
   );
 });
 
-test('Pass2 #6: goal continuation propagates principalOf so queued guest messages execute cleanly', async () => {
+test('Pass2 #6: goal continuation propagates principalOf so queued guest messages execute cleanly', { timeout: 10000 }, async (t) => {
   const dir = tmpDir('goal-q-');
-  const qDir = tmpDir('q-store-');
+  const configDir = tmpDir('guest-config-');
+  const guestRoot = path.join(configDir, 'workspace');
+  fs.symlinkSync(dir, guestRoot, process.platform === 'win32' ? 'junction' : 'dir');
+  fs.writeFileSync(path.join(configDir, 'principals.json'), JSON.stringify({
+    guests: [{ id: 'friend', name: 'Alice', root: guestRoot, allowSend: true }],
+  }));
+  const { principals, errors } = loadPrincipals({ dir: configDir, manageGenerations: true });
+  assert.deepEqual(errors, []);
+  const principalOf = (id) => principals.find((p) => p.id === id) ?? null;
+  const guest = principalOf('friend');
   const key = 'codex:11111111-1111-4111-8111-111111111111';
   const member = {
     key,
     agent: 'codex',
     providerId: '11111111-1111-4111-8111-111111111111',
-    cwd: dir,
+    cwd: guestRoot,
     file: path.join(dir, 'empty.jsonl'),
   };
-  const guest = { id: 'friend', name: 'Alice', roots: [dir], allowSend: true };
-  const owner = { id: 'owner', name: 'Owner', roots: null, allowSend: null };
-  const principalOf = (id) => (id === 'friend' ? guest : id === 'owner' ? owner : null);
-
-  let latest = null;
   const ranPrompts = [];
-  let runSeq = 0;
-  let releaseSecond;
-  const secondGate = new Promise((r) => { releaseSecond = r; });
-
-  const turnsStub = {
-    start: ({ turnId }) => { latest = { turnId, status: 'running' }; },
-    end: ({ turnId, status }) => { latest = { turnId, status: status ?? 'ok' }; return latest; },
-    latest: () => latest,
-  };
-  const queueStub = {
-    enqueue: (i) => enqueue(i, { dir: qDir }),
-    takeNext: (k) => takeNextQueue(k, qDir),
-    list: (k) => listQueue(k, { dir: qDir }),
-  };
-
-  let goalChecks = 0;
-  const goalOf = async () => {
-    goalChecks += 1;
-    // Active after turn 1 (triggers continuation), completed after turn 2.
-    return goalChecks === 1 ? { status: 'active' } : { status: 'completed' };
-  };
-
-  const repo = { listChains: () => [{ agent: 'codex', members: [member] }], getSession: (k) => (k === key ? member : null) };
-
-  await sendMessage({
-    repo,
+  const continuationStarted = Promise.withResolvers();
+  const releaseContinuation = Promise.withResolvers();
+  const guestFinished = Promise.withResolvers();
+  t.after(() => releaseContinuation.resolve());
+  const deps = {
+    repo: { getSession: (k) => (k === key ? member : null) },
     config: { allowSend: true },
-    principal: owner,
     principalOf,
     key,
-    message: 'start task',
-    goalOf,
-    turns: turnsStub,
-    queue: queueStub,
+    goalOf: async () => ({ status: ranPrompts.length === 1 ? 'active' : 'completed' }),
+    live: () => new Map(),
     push: { send: async () => {} },
+    audit: ({ principal, status }) => {
+      if (principal === 'friend' && status === 'ok') guestFinished.resolve();
+    },
     env: {},
     runner: async ({ message }) => {
       ranPrompts.push(message);
-      runSeq += 1;
-      if (runSeq === 2) {
-        // Guest queues a message while the continued goal turn is running.
-        queueStub.enqueue({ key, text: 'guest follow up', fork: false, principalId: 'friend' });
-        await secondGate;
+      if (message === GOAL_CONTINUE) {
+        continuationStarted.resolve();
+        await releaseContinuation.promise;
       }
       return { code: 0, lines: [], summary: { status: 'ok', eventCount: 1 } };
     },
-  });
-
-  // Give settle/goal continuation a tick to launch turn 2, then release it.
-  await new Promise((r) => setTimeout(r, 40));
-  releaseSecond?.();
-  await new Promise((r) => setTimeout(r, 80));
-
-  assert.equal(ranPrompts.includes('guest follow up'), true, `expected guest queued prompt to run, got ${JSON.stringify(ranPrompts)}`);
+  };
+  const first = await sendMessage({ ...deps, principal: principalOf('owner'), message: 'start task' });
+  assert.equal(first.body.queued, false);
+  await continuationStarted.promise;
+  const queued = await sendMessage({ ...deps, principal: guest, message: 'guest follow up' });
+  assert.equal(queued.body.queued, true);
+  releaseContinuation.resolve();
+  await guestFinished.promise;
+  assert.deepEqual(ranPrompts, ['start task', GOAL_CONTINUE, 'guest follow up']);
+  assert.equal(listQueue(key).length, 0);
+  const turn = listTurns(key).find((r) => r.queueId === queued.body.queueId);
+  assert.equal(turn.principalId, guest.id);
+  assert.equal(turn.principalGeneration, guest.generation);
 });
 
 test('Pass2 #7: runProcess bounds retained lines memory while streaming all onLine events', async () => {

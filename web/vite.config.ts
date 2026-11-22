@@ -25,6 +25,8 @@ import { defineConfig } from 'vite';
 const API_TARGET = process.env.BATON_ORIGIN ?? 'http://127.0.0.1:3002';
 
 export default defineConfig({
+  // Shared TypeScript modules also use the web project's compiler settings here.
+  tsconfig: './tsconfig.app.json',
   plugins: [react()],
   server: {
     proxy: {

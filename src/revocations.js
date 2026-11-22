@@ -1,6 +1,5 @@
-import crypto from 'node:crypto';
 import fs from 'node:fs';
-import path from 'node:path';
+import { withJsonWriteLock, writeJsonAtomic } from './json-store.js';
 
 /**
  * 被吊销的设备凭据，落在 ~/.baton/revoked.json。
@@ -24,98 +23,106 @@ import path from 'node:path';
  *
  * ## 读写
  *
- * 每次查询先比一下文件的 mtime，变了才重读：命令行脚本改了表，守护进程不用重启就生效。
- * 写用「写临时文件再 rename」，半截文件不会出现。
- *
- * 文件坏了（不是合法 JSON）时**按空表处理并在日志里喊一声**，而不是拒绝所有人：
- * 后者会把 owner 自己锁在门外，而他修这个文件的唯一入口可能正是手机。
+ * CLI 与守护进程共用原有 JSON 格式。写入者通过 SQLite 事务取进程间互斥锁，
+ * 在锁内重读、修改并原子替换账本。写入进程意外退出时，系统会释放锁。
+ * 旧版本仍能读写这个 JSON；并发写入需要各写入端都使用此锁。
+ * 首次发现或成功写入账本时留下持久标记。以后缺表时，重启后的进程也会暂停派生凭据。
  */
 function parseRevocationsJson(text) {
-  const raw = JSON.parse(text);
-  return {
-    devices: raw && typeof raw.devices === 'object' && raw.devices && !Array.isArray(raw.devices)
-      ? { ...raw.devices }
-      : {},
-    legacy: Array.isArray(raw?.legacy) ? raw.legacy.map(String) : [],
-  };
+  let raw;
+  try {
+    raw = JSON.parse(text);
+  } catch {
+    throw new Error('吊销表不是有效的 JSON。');
+  }
+  if (!raw?.devices || typeof raw.devices !== 'object' || Array.isArray(raw.devices)
+    || !Array.isArray(raw.legacy) || raw.legacy.some((id) => typeof id !== 'string')) {
+    throw new Error('吊销表必须含有 devices 对象和 legacy 身份数组。');
+  }
+  if (Object.values(raw.devices).some((entry) => typeof entry?.principal !== 'string' || typeof entry?.at !== 'string')) {
+    throw new Error('设备吊销记录缺少身份或日期。');
+  }
+  return raw;
 }
 
 export function fileRevocations(file) {
-  let state = { devices: {}, legacy: [] };
-  let seen = -1;
-  let loadedOnce = false;
+  const empty = { devices: {}, legacy: [] };
+  const marker = file + '.initialized';
+  let sawLedger = false;
+  let cachedText = null;
+  let cachedState = empty;
+  let reportedError = false;
 
-  const hasEntries = (s) => Object.keys(s.devices).length > 0 || s.legacy.length > 0;
+  function rememberLedger() {
+    if (sawLedger) return;
+    try { fs.writeFileSync(marker, '1\n', { flag: 'wx', mode: 0o600, flush: true }); }
+    catch (err) { if (err.code !== 'EEXIST') throw err; }
+    sawLedger = true;
+  }
 
   function load() {
-    let mtime;
+    let text;
     try {
-      mtime = fs.statSync(file).mtimeMs;
+      text = fs.readFileSync(file, 'utf8');
     } catch (err) {
-      // Only clear if the file genuinely does not exist; retain loaded revocations on transient stat errors.
-      if (err?.code === 'ENOENT') {
-        if (seen !== 0) state = { devices: {}, legacy: [] };
-        seen = 0;
-        loadedOnce = false;
-      }
-      return;
+      if (err.code === 'ENOENT' && !sawLedger && !fs.lstatSync(marker, { throwIfNoEntry: false })) return empty;
+      throw err;
     }
-    if (mtime === seen) return;
+    rememberLedger();
+    // 相同 mtime 的替换也要生效；表很小，按原文复用已解析的快照。
+    if (text !== cachedText) {
+      cachedState = parseRevocationsJson(text);
+      cachedText = text;
+    }
+    reportedError = false;
+    return cachedState;
+  }
+
+  function checkedLedger() {
     try {
-      state = parseRevocationsJson(fs.readFileSync(file, 'utf8'));
-      seen = mtime;
-      loadedOnce = true;
-    } catch (e) {
-      // Cold-start corrupt file degrades to empty table so owner can recover; once valid revocations
-      // have been loaded, retain the in-memory set rather than failing open on mid-write corruption.
-      console.error(`[baton] ${file} 读不懂：${e.message}`);
-      if (!loadedOnce || !hasEntries(state)) {
-        state = { devices: {}, legacy: [] };
-        seen = mtime;
+      return load();
+    } catch (err) {
+      if (!reportedError) {
+        console.error(`[baton] ${file} 无法验证，已暂停设备和旧凭据。请修复或恢复吊销表。`, err.message);
+        reportedError = true;
       }
+      return null;
     }
   }
 
-  function save() {
-    fs.mkdirSync(path.dirname(file), { recursive: true });
-    let mergedDevices = { ...state.devices };
-    const mergedLegacy = new Set(state.legacy);
-    try {
-      const onDisk = parseRevocationsJson(fs.readFileSync(file, 'utf8'));
-      mergedDevices = { ...onDisk.devices, ...mergedDevices };
-      for (const id of onDisk.legacy) mergedLegacy.add(id);
-    } catch {
-      // Ignore missing or unreadable disk file before merging new state.
-    }
-    state = { devices: mergedDevices, legacy: [...mergedLegacy] };
-    const tmp = `${file}.${process.pid}.${crypto.randomBytes(4).toString('hex')}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(state, null, 2), { mode: 0o600 });
-    fs.renameSync(tmp, file);
-    loadedOnce = true;
-    seen = -1; // Re-stat on next query so sub-millisecond writes are not skipped.
+  function update(change) {
+    return withJsonWriteLock(file, () => {
+      const next = change(load());
+      if (!next) return false;
+      const text = writeJsonAtomic(file, next);
+      rememberLedger();
+      cachedText = text;
+      cachedState = next;
+      return true;
+    });
   }
 
   return {
     isRevoked(deviceId) {
-      load();
-      return Object.hasOwn(state.devices, deviceId);
+      const state = checkedLedger();
+      return !state || Object.hasOwn(state.devices, deviceId);
     },
     isLegacyRevoked(principalId) {
-      load();
-      return state.legacy.includes(principalId);
+      const state = checkedLedger();
+      return !state || state.legacy.includes(principalId);
     },
     revoke(deviceId, principalId) {
-      load();
-      if (Object.hasOwn(state.devices, deviceId)) return;
-      state.devices[deviceId] = { principal: principalId, at: new Date().toISOString() };
-      save();
+      return update((state) => {
+        if (Object.hasOwn(state.devices, deviceId)) return null;
+        const entry = { principal: principalId, at: new Date().toISOString() };
+        return { ...state, devices: { ...state.devices, [deviceId]: entry } };
+      });
     },
     revokeLegacy(principalId) {
-      load();
-      if (state.legacy.includes(principalId)) return false;
-      state.legacy.push(principalId);
-      save();
-      return true;
+      return update((state) => {
+        if (state.legacy.includes(principalId)) return null;
+        return { ...state, legacy: [...state.legacy, principalId] };
+      });
     },
   };
 }
@@ -127,7 +134,11 @@ export function memoryRevocations() {
   return {
     isRevoked: (id) => devices.has(id),
     isLegacyRevoked: (pid) => legacy.has(pid),
-    revoke: (id, pid) => { devices.set(id, pid); },
+    revoke(id, pid) {
+      if (devices.has(id)) return false;
+      devices.set(id, pid);
+      return true;
+    },
     revokeLegacy: (pid) => { const had = legacy.has(pid); legacy.add(pid); return !had; },
   };
 }

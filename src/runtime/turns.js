@@ -2,6 +2,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { BATON_DIR } from '../config.js';
 import { emitTurn } from './bus.js';
+import { currentInstanceId, executionHandle } from './instance.js';
+import { processBirth } from './processIdentity.js';
+import { preserveReceipt, withReceipt } from './receipts.js';
 
 // 每一轮都有终态记录。这是五个现有工具共同的致命伤：
 // 轮次结束得不明不白，客户端就只能永远转圈。
@@ -21,6 +24,7 @@ export function classifyOutcome({ status, eventCount }) {
   // aborted 是用户主动停止的显式终态，不参与「零消息即异常」的判定
   if (status === 'aborted') return 'aborted';
   if (status === 'failed') return 'failed';
+  if (status === 'unconfirmed') return 'unconfirmed';
   // 交给了正开着这个会话的 Codex App 去跑（agent/codexQueue.js）。这一轮在 Baton 这边没有消息，
   // 但不是异常：回复由 App 写进同一个 rollout
   if (status === 'handoff') return 'handoff';
@@ -42,8 +46,9 @@ function write(dir, key, turn) {
 function read(dir, key, turnId) {
   try {
     return JSON.parse(fs.readFileSync(turnFile(key, turnId, { dir }), 'utf8'));
-  } catch {
-    return null;
+  } catch (error) {
+    if (error.code === 'ENOENT' || error instanceof SyntaxError) return null;
+    throw error;
   }
 }
 
@@ -56,11 +61,23 @@ function read(dir, key, turnId) {
  * 为什么不去读轮次记录：
  *   贵——每个会话都要 readdir + 读全部轮次文件，实测 163 条链，一次列表请求
  *        就是上百次 IO。
- *   而且**内存这份更准**：守护进程如果在某一轮跑到一半时挂掉，那条记录的
- *        status 会永远停在 running（reconcileOrphans 只收有停止意图的那些）。
- *        内存集合重启即空，正好对应「那个进程确实已经不在了」。
+ *   实例启动时恢复仍有执行证据的轮次，并在最后一个运行中的轮次结算后摘掉会话。
  */
 const running = new Set();
+// turnId -> 当前执行句柄。桌面桥接仅可监控，其余执行由句柄请求停止。
+export const liveTurns = new Map();
+
+export function registerTurnHandle(key, turnId, handle) {
+  liveTurns.set(turnId, handle);
+  const recordPid = (pid, birth = null) => updateTurnControl(key, turnId, { childPid: pid,
+    ...(birth ? { childStarted: birth } : {}), ...(handle.detachedGroup ? { childGroup: pid } : {}) });
+  if (handle.canStop === false) updateTurnControl(key, turnId, { canStop: false, ...(handle.monitor ? { monitor: handle.monitor } : {}) });
+  else if (handle.onPid) handle.onPid(recordPid);
+  else if (Number.isInteger(handle.pid) && handle.pid > 0) recordPid(handle.pid, handle.childStarted);
+  executionHandle(turnId, handle, () => {
+    if (!read(BATON_DIR, key, turnId)?.stopReason) updateTurnControl(key, turnId, { stopReason: 'Baton 守护进程正在关闭，已请求停止本轮。' });
+  }, true);
+}
 
 export function runningKeys() {
   return running;
@@ -77,31 +94,55 @@ export function runningKeys() {
  * 放在轮次记录里而不是只在发送那台设备上本地回显：另一台设备看着同一个会话时也一样
  * 先看到动画后看到消息；断线重连补推当前轮次时也带着它。
  */
-export function startTurn({ key, turnId, agent, prompt }, { dir = BATON_DIR, now = Date.now() } = {}) {
-  running.add(key);
-  const turn = write(dir, key, {
+export function startTurn({ key, turnId, agent, prompt, request = null, queueId = null, principalId = null, principalGeneration = null,
+  adoptedDesktop = null },
+  { dir = BATON_DIR, now = Date.now(), beforePublish = null } = {}) {
+  const turn = {
     key, turnId, agent, status: 'running',
+    ...(currentInstanceId() ? { ownerId: currentInstanceId(), ownerPid: process.pid } : {}),
+    ...(adoptedDesktop ? { canStop: false, ownerId: adoptedDesktop.ownerId, monitor: adoptedDesktop.monitor } : {}),
     startedAt: now, endedAt: null, error: null, tokens: null, eventCount: 0,
     ...(typeof prompt === 'string' && prompt ? { prompt } : {}),
-  });
+    ...(request ? { request } : {}),
+    ...(queueId ? { queueId } : {}),
+    ...(principalId ? { principalId } : {}),
+    ...(principalGeneration ? { principalGeneration } : {}),
+  };
+  withReceipt(turn, () => {
+    write(dir, key, turn);
+    try { beforePublish?.(); } catch (error) {
+      fs.unlinkSync(turnFile(key, turnId, { dir }));
+      throw error;
+    }
+  }, { dir, now, allowSourceOnly: !!queueId, durableSource: true });
+  running.add(key);
   emitTurn(key, 'turn_start', turn);
   return turn;
 }
 
-const TERMINAL = new Set(['ok', 'failed', 'anomaly', 'aborted', 'handoff']);
+// 停止请求是运行中的一个标志。进程退出前，普通发送、插队和队列看门狗都仍看到 running。
+export function updateTurnControl(key, turnId, fields, { dir = BATON_DIR } = {}) {
+  const turn = read(dir, key, turnId);
+  if (!turn || turn.status !== 'running') return turn;
+  const updated = write(dir, key, { ...turn, ...fields });
+  emitTurn(key, 'turn_control', updated);
+  return updated;
+}
+
+const TERMINAL = new Set(['ok', 'failed', 'anomaly', 'aborted', 'handoff', 'unconfirmed']);
 const MAX_TURNS_PER_SESSION = 50;
 
-function pruneTurns(dir, key, keep) {
+function pruneTurns(dir, key, keep, turns, now) {
   if (!Number.isFinite(keep) || keep < 1) return;
-  const turns = listTurns(key, { dir });
   const finished = turns.filter((t) => TERMINAL.has(t.status));
   const excess = finished.length - keep;
   if (excess <= 0) return;
   for (const old of finished.slice(0, excess)) {
     try {
+      preserveReceipt(old, { dir, now });
       fs.unlinkSync(turnFile(key, old.turnId, { dir }));
     } catch {
-      // already removed
+      // 无法保存回执或清理记录时保留原件，后续收尾再试。
     }
   }
 }
@@ -112,18 +153,14 @@ export function endTurn(
 ) {
   const prev = read(dir, key, turnId) ?? { key, turnId, agent: null, startedAt: now };
   // 终态是终态：已经结束的一轮不得被改写。
-  // 用户点了停止之后，进程自己的 .then() 仍会跑一遍 endTurn——
-  // 若不拦住，「已停止」会被覆盖成「正常完成」，停止就失去了痕迹。
-  // 没有状态变化就不发事件：否则停止后进程自己的 .then() 会让客户端收到第二个
-  // turn_end，秒表当场跳一下。
+  // 重复的收尾只返回第一次的结果，客户端只收到一帧 turn_end。
   if (TERMINAL.has(prev.status)) return prev;
-  const outcome = classifyOutcome({ status, eventCount });
+  const outcome = prev.stopReason ? 'aborted' : classifyOutcome({ status, eventCount });
   const explain = outcome === 'anomaly'
     ? `本轮有 ${tokenTotal(tokens)} 个 token 产出但没有产生任何消息事件。`
       + '通常意味着 agent 被中途杀掉、输出 schema 变了，或写入 transcript 失败。'
       + '检查 docs/ops/agent-protocol.md 与该会话 transcript 的尾部。'
-    : (error ?? null);
-  running.delete(key);
+    : (prev.stopReason ?? error ?? null);
   const turn = write(dir, key, {
     ...prev,
     status: outcome,
@@ -132,8 +169,10 @@ export function endTurn(
     tokens: tokens ?? null,
     eventCount: eventCount ?? 0,
   });
+  const records = listTurns(key, { dir });
+  if (!records.some((record) => record.status === 'running')) running.delete(key);
   emitTurn(key, 'turn_end', turn);
-  pruneTurns(dir, key, keep);
+  pruneTurns(dir, key, keep, records, now);
   return turn;
 }
 
@@ -141,8 +180,9 @@ export function listTurns(key, { dir = BATON_DIR } = {}) {
   let names;
   try {
     names = fs.readdirSync(runsDir(dir, key)).filter((n) => n.endsWith('.json'));
-  } catch {
-    return [];
+  } catch (error) {
+    if (error.code === 'ENOENT') return [];
+    throw error;
   }
   return names
     .map((n) => read(dir, key, n.replace(/\.json$/, '')))
@@ -151,34 +191,47 @@ export function listTurns(key, { dir = BATON_DIR } = {}) {
 }
 
 export function latestTurn(key, opts) {
-  return listTurns(key, opts).at(-1) ?? null;
+  const turns = listTurns(key, opts);
+  return turns.findLast((turn) => turn.status === 'running') ?? turns.at(-1) ?? null;
 }
 
 const INTERRUPTED = '这一轮还没跑完，Baton 守护进程就退出了（重启、崩溃或关机）。';
 
+export function ownedProcessAlive(pid, turn, { platform = process.platform, probe = process.kill.bind(process), birthOf = processBirth } = {}) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  const exists = (target) => {
+    try { probe(target, 0); return true; } catch (err) { return err.code === 'EPERM'; }
+  };
+  if (exists(pid)) {
+    if (!turn?.childStarted) return true; // 旧记录缺少创建时间，只保守观察，绝不按此 PID 发停止信号。
+    const birth = birthOf(pid);
+    return !birth || birth === turn.childStarted;
+  }
+  return platform !== 'win32' && turn?.childGroup === pid && exists(-pid);
+}
+
+export function recoverTurn(turn, { dir = BATON_DIR, now = Date.now(), alive = ownedProcessAlive, inspectMonitor = (_turn) => null } = {}) {
+  if (turn.ownerId && turn.ownerId === currentInstanceId()) return null;
+  const observed = turn.canStop === false ? inspectMonitor(turn) : null;
+  if (turn.canStop === false ? !observed : turn.childPid && alive(turn.childPid, turn)) {
+    running.add(turn.key);
+    return null;
+  }
+  return endTurn({ key: turn.key, turnId: turn.turnId, status: 'failed', error: INTERRUPTED,
+    tokens: turn.tokens, eventCount: turn.eventCount, ...observed }, { dir, now });
+}
+
 /**
- * 守护进程启动时调用：盘上还是 running 的轮次，一律收尾。
- *
- * 终态只由起这一轮的那个守护进程写（sendMessage 里 runner 的 .then）。那个进程
- * 一没，就再也没有人会写了——而 reconcileOrphans 只收有停止意图的那些。
- * 09-22 就是这样留下一条永远 running 的记录：之后八天里，那个会话的秒表一直
- * 走（显示 11721:44），每条新消息都排在这个不存在的轮次后面，永远发不出去。
- *
- * 能一律收，依据和上面 `running` 那段是同一条：它在内存里，重启即空。刚启动的
- * 进程手里一个轮次都没有，所以盘上所有 running 都是上一个进程的。
- *
- * 前提是**确实只有这一个守护进程**。所以调用方必须在端口绑定成功之后才调它
- * （见 cli.js）：不小心再起一个的话，第二个绑不上端口就会退出，不会把第一个
- * 正在跑的轮次收掉。
- *
- * 判 failed 而不是 aborted：aborted 是「用户按了停止」，这里没人按。
- * 有停止意图的那些先由 reconcileOrphans 收成 aborted，这里的终态守卫不会改写它们。
+ * 新实例取得目录的独占锁后再检查上一实例留下的轮次。活着的子进程和桌面端
+ * 仍在处理的请求继续占有会话；调用方定期复查，直到能确认其终态。
  */
-export function reconcileRunning({ dir = BATON_DIR, now = Date.now() } = {}) {
+export function reconcileRunning({ dir = BATON_DIR, key: onlyKey = null, now = Date.now(), alive = ownedProcessAlive,
+  inspectMonitor = (_turn) => null, onRetained = (_turn) => {}, onScanError = (_key) => {} } = {}) {
   let names;
   try {
-    names = fs.readdirSync(path.join(dir, 'runs'));
-  } catch {
+    names = onlyKey == null ? fs.readdirSync(path.join(dir, 'runs')) : [encodeURIComponent(onlyKey)];
+  } catch (error) {
+    if (error.code !== 'ENOENT') onScanError(null);
     return [];
   }
   const fixed = [];
@@ -189,12 +242,14 @@ export function reconcileRunning({ dir = BATON_DIR, now = Date.now() } = {}) {
     } catch {
       continue; // 不是本模块写的目录名
     }
-    for (const t of listTurns(key, { dir })) {
+    let records;
+    try { records = listTurns(key, { dir }); } catch { onScanError(key); continue; }
+    for (const t of records) {
       if (t.status !== 'running') continue;
-      fixed.push(endTurn({
-        key, turnId: t.turnId, status: 'failed', error: INTERRUPTED,
-        tokens: t.tokens, eventCount: t.eventCount,
-      }, { dir, now }));
+      let ended;
+      try { ended = recoverTurn(t, { dir, now, alive, inspectMonitor }); } catch { running.add(key); }
+      if (ended) fixed.push(ended);
+      else onRetained(t);
     }
   }
   return fixed;

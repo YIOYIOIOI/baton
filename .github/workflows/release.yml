@@ -26,13 +26,24 @@ jobs:
       - run: npm run oss:check
       - run: npm run web:build
       - run: npm run build:web
-      - run: npx --prefix app tsc --noEmit
+      - run: npx tsc --noEmit -p tsconfig.json
+        working-directory: app
       - run: npm --prefix app test -- --watchAll=false
-      - run: npm pack
+      - name: Pack and verify desktop and mobile UIs
+        id: pack
+        run: |
+          filename=$(npm pack --silent --ignore-scripts --pack-destination "$RUNNER_TEMP")
+          archive="$RUNNER_TEMP/$filename"
+          node .github/scripts/verify-release-uis.mjs "$archive"
+          release_tree=$(mktemp -d "$RUNNER_TEMP/baton-release.XXXXXX")
+          tar -xzf "$archive" -C "$release_tree"
+          node scripts/verify-oss-clean.mjs --release-dir "$release_tree/package"
+          echo "archive=$archive" >> "$GITHUB_OUTPUT"
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v3
         with:
           name: Baton ${{ github.ref_name }}
           body_path: .github/release-notes.md
-          files: baton-*.tgz
+          files: ${{ steps.pack.outputs.archive }}
+          fail_on_unmatched_files: true
           generate_release_notes: false

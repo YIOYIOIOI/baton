@@ -50,6 +50,25 @@ test('半行不推送，补齐换行后才推', () => {
   assert.equal(got[0].text, '第 2 条');
 });
 
+test('已换行的回复先推送，后面的半个 UTF-8 字符等下次续写', () => {
+  const m = setup();
+  const got = [];
+  const f = createFollower(m, (events) => got.push(...events));
+  const first = Buffer.from(assistant(1) + '\r\n');
+  const second = Buffer.from(assistant(2) + '\n');
+  const cut = second.indexOf(Buffer.from('第')) + 1;
+  const mark = f.offset + first.length;
+  fs.appendFileSync(m.file, Buffer.concat([first, second.subarray(0, cut)]));
+  f.tick();
+  assert.deepEqual(got.map((e) => e.text), ['第 1 条']);
+  assert.equal(f.offset, mark);
+  f.tick();
+  fs.appendFileSync(m.file, second.subarray(cut));
+  f.tick();
+  assert.deepEqual(got.map((e) => e.text), ['第 1 条', '第 2 条']);
+  assert.equal(f.offset, fs.statSync(m.file).size);
+});
+
 test('文件被截断时偏移回退到新的文件末尾且不抛异常', () => {
   const m = setup();
   const got = [];

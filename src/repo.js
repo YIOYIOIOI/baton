@@ -1,6 +1,6 @@
 import {
   CLAUDE_ROOT, CODEX_ROOT, GEMINI_ROOT,
-  claudeSessionFiles, codexRolloutFiles, antigravitySessionFiles, decodeKey, sessionRef,
+  claudeSessionFiles, codexRolloutFiles, antigravitySessionFiles, decodeKey, sessionRef, parseAntigravityRel, isTransientFileError,
 } from './providers.js';
 import { readHead, readTail, parseLines } from './jsonl.js';
 import { claudeHead, claudeTail, claudeFirstUserText } from './claude.js';
@@ -92,7 +92,7 @@ export function createRepo(opts = {}) {
       descriptions: codex?.descriptions ?? new Map(),
       chats: codex?.chats,
       names: codexIndexFile ? codexThreadNames({ file: codexIndexFile }) : new Map(),
-      antigravity: geminiRoot ? antigravityApp({ root: geminiRoot }).summaries : new Map(),
+      antigravityByDirectory: geminiRoot ? antigravityApp({ root: geminiRoot }).byDirectory : new Map(),
     };
     return sources;
   }
@@ -105,11 +105,13 @@ export function createRepo(opts = {}) {
     return src === null || src === 'user';
   }
 
-  function memberOf(ref, { app, descriptions, names, chats, antigravity }) {
+  function memberOf(ref, { app, descriptions, names, chats, antigravityByDirectory }) {
     const head = headFacts(ref);
     const tail = tailFacts(ref);
-    const ag = ref.agent === 'antigravity' ? antigravity?.get(ref.providerId) : null;
-    const cwd = ag?.cwd ?? head.cwd;
+    const antigravity = ref.agent === 'antigravity' ? antigravityByDirectory.get(ref.project ?? '') : null;
+    const ag = antigravity?.get(ref.providerId);
+    // 授权和启动只认这份转录所在产品目录的宿主摘要；聊天正文和其他产品的同名记录不参与。
+    const cwd = ref.agent === 'antigravity' ? ag?.cwd ?? null : head.cwd;
     const parentId = ag?.parentId ?? head.parentId ?? null;
     const { title, titleTier } = resolveTitle({
       agent: ref.agent, providerId: ref.providerId,
@@ -135,9 +137,9 @@ export function createRepo(opts = {}) {
    *   - Claude 被接替的旧段 / 删掉的墓碑
    *   - Antigravity nesting_depth > 0 的子代理或 killed = 1 的已删除会话
    */
-  function inAppList(m, { app, antigravity }) {
+  function inAppList(m, { app, antigravityByDirectory }) {
     if (m.agent === 'antigravity') {
-      const s = antigravity?.get(m.providerId);
+      const s = antigravityByDirectory.get(m.project ?? '')?.get(m.providerId);
       if (s && (s.nestingDepth > 0 || s.killed)) return false;
       return true;
     }
@@ -169,11 +171,26 @@ export function createRepo(opts = {}) {
       ...codexRolloutFiles({ root: codexRoot }),
       ...(geminiRoot ? antigravitySessionFiles({ root: geminiRoot }) : []),
     ];
-    const members = newestPerId(
-      refs.filter(isSession).map((ref) => memberOf(ref, src)).filter((m) => inAppList(m, src)),
-    );
+    const members = [];
+    for (const ref of refs) {
+      try {
+        if (isSession(ref) && inAppList(ref, src)) members.push(memberOf(ref, src));
+      } catch (error) {
+        if (!isTransientFileError(error)) throw error;
+      }
+    }
     counters.scanMs = Date.now() - t0;
-    return members;
+    return newestPerId(members);
+  }
+
+  function lookup(target) {
+    try {
+      const ref = sessionRef(target.agent, roots[target.agent], target.relPath);
+      return ref && isSession(ref) ? memberOf(ref, titleSources()) : null;
+    } catch (error) {
+      if (isTransientFileError(error)) return null;
+      throw error;
+    }
   }
 
   return {
@@ -188,9 +205,24 @@ export function createRepo(opts = {}) {
       } catch {
         return null;
       }
-      const ref = sessionRef(target.agent, roots[target.agent], target.relPath);
-      if (!ref || !isSession(ref)) return null;
-      return memberOf(ref, titleSources());
+      return lookup(target);
+    },
+    getSessionForRecovery(key) {
+      let target;
+      try { target = decodeKey(key, roots); } catch { return { status: 'unavailable' }; }
+      const parts = target.relPath.split('/');
+      // Only an explicit provider tombstone authorizes permanently discarding accepted work.
+      if (target.agent === 'claude' && parts.length === 2 && parts[1].endsWith('.jsonl')) {
+        const id = parts[1].slice(0, -6);
+        if (titleSources().app.deleted.has(id) && titleSources({ fresh: true }).app.deleted.has(id)) return { status: 'missing' };
+      }
+      if (target.agent === 'antigravity') {
+        const ref = parseAntigravityRel(parts);
+        const killed = (sources) => ref && sources.antigravityByDirectory.get(ref.product ?? '')?.get(ref.providerId)?.killed;
+        if (killed(titleSources()) && killed(titleSources({ fresh: true }))) return { status: 'missing' };
+      }
+      const member = lookup(target);
+      return member ? { status: 'present', member } : { status: 'unavailable' };
     },
     stats() {
       return { ...counters };

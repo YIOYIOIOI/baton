@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import path from 'node:path';
 import { createServer } from '../src/http/server.js';
 import { createAuth } from '../src/http/auth.js';
@@ -40,6 +41,44 @@ test('fileDevices 原子持久化并在 60 秒内节流 touch', () => {
   assert.equal(reloaded.get('dev1').lastSeenAt, 1000);
   store.touch('dev1', 70_000); // 超过 60 秒：落盘更新
   assert.equal(fileDevices(file).get('dev1').lastSeenAt, 70_000);
+});
+
+test('设备清单异常时保留最近快照，拒绝覆盖，修复后可重试', (t) => {
+  const file = path.join(tmpDir(), 'devices.json');
+  const store = fileDevices(file);
+  const entry = { deviceId: 'device-a', principalId: 'friend', now: 1 };
+  store.register(entry);
+  const valid = fs.readFileSync(file, 'utf8');
+  t.mock.method(console, 'error', () => {});
+  const badGeneration = JSON.parse(valid);
+  badGeneration.devices['device-a'].generation = 7;
+  for (const invalid of ['{', '{"devices":[]}', '{"devices":{"device-a":null}}', JSON.stringify(badGeneration)]) {
+    fs.writeFileSync(file, invalid);
+    assert.equal(store.list()[0]?.id, 'device-a');
+    assert.equal(store.touch('device-a', 100_000), false);
+    assert.throws(() => store.register({ ...entry, deviceId: 'device-b' }));
+    assert.throws(() => store.remove('device-a'));
+    assert.equal(fs.readFileSync(file, 'utf8'), invalid);
+  }
+  fs.writeFileSync(file, valid);
+  assert.equal(store.touch('device-a', 100_000), true);
+  store.register({ ...entry, deviceId: 'device-b' });
+  assert.equal(fileDevices(file).list().length, 2);
+});
+
+test('owner 可按已知设备号吊销清单缺失的设备；访客不能借此吊销其他设备', async () => {
+  await withDeviceServer(async ({ base, auth, devices }) => {
+    const missing = auth.verifyPair(auth.newPairingCode('friend'));
+    const guest = auth.verifyPair(auth.newPairingCode('friend'));
+    devices.remove(missing.deviceId);
+    const revoke = (bearer, deviceId) => fetch(`${base}/api/devices/revoke`, {
+      method: 'POST', headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ deviceId }),
+    });
+    assert.equal((await revoke(guest.bearer, missing.deviceId)).status, 404);
+    assert.equal((await revoke(TOKEN, missing.deviceId)).status, 200);
+    assert.equal(auth.authorize({ headers: { authorization: `Bearer ${missing.bearer}` } }).ok, false);
+  });
 });
 
 async function withDeviceServer(fn, { config = {} } = {}) {

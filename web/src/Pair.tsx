@@ -4,6 +4,7 @@ import { Handoff } from './Handoff';
 import { useI18n } from './i18n';
 import { setPrefs } from './prefs';
 import { Wordmark } from './Wordmark';
+import { pairBrowser } from '../../app/src/store/browserSession';
 import { Toasts, copyText } from './ui';
 import './door.css';
 import './pair.css';
@@ -97,7 +98,7 @@ export function Pair() {
     setBusy(true);
     setErr(null);
     try {
-      await api.pair(c);
+      await pairBrowser(() => api.pair(c));
       setDone(true);
       // 留半秒给「接住了」那一下，再整页跳转：配对后服务端给了新 cookie，
       // 让下一次加载从干净状态开始，省得去想哪些内存状态该失效
@@ -105,7 +106,12 @@ export function Pair() {
         window.location.href = '/';
       }, 700);
     } catch (e) {
-      setErr(e as ApiError);
+      if (e instanceof Error && (e.message === 'pairing_busy' || e.message === 'pairing_coordination')) {
+        setErr(new ApiError(0, e.message, t(e.message === 'pairing_busy' ? 'pair.busyElsewhere' : 'pair.coordination'), ''));
+      } else if (e instanceof Error && e.message === 'pairing_unconfirmed') {
+        setErr(new ApiError(0, e.message, t('pair.unconfirmed'), ''));
+      } else setErr(e instanceof Error && e.message === 'unpair_pending'
+        ? new ApiError(409, 'unpair_pending', t('pair.unpairPending'), '') : e as ApiError);
       setBusy(false);
       setMiss((n) => n + 1);
     }

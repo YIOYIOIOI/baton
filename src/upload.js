@@ -1,5 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { UPLOAD_DIR } from './scope.js';
+import { inWebRoot } from './http/static.js';
+import { canonicalCwd, openVerifiedFile } from './sessionfs.js';
 
 /**
  * 从手机传文件到那台电脑。
@@ -13,7 +16,7 @@ import path from 'node:path';
  * 那样传是传上去了，agent 说看不见，人只会以为 Baton 坏了。
  */
 
-export const UPLOAD_DIR = '.baton-uploads';
+export { UPLOAD_DIR };
 export const MAX_BYTES = 20 * 1024 * 1024;
 
 /**
@@ -127,30 +130,18 @@ function ignoreSelf(dir) {
  * 这个区别不是理论上的——之前静态资源那道闸就是栽在这上面，注释里写着防符号链接，
  * 实际上一个 junction 就能穿过去。所以这里对**两边都取 realpath 之后再比**。
  *
- * ## 它管的是文件名，**不是 cwd 本身**
- *
- * 这一层保证的是「`.baton-uploads/<名字>` 不会跑出这个 cwd」。**它不保证这个
- * cwd 在谁的工作区里**——那是调用方（`inScope`）的事，而 `inScope` 走的是
- * `path.resolve`，不解析链接。于是访客 root 下放一个指向别处的 junction，
- * cwd 校验会放行，字节落在 junction 的目标上（`test/upload-cwd.test.js`
- * 末尾那条测试把这个行为钉住了）。
- *
- * **这不是这条路独有的**：`createSession` 用同一个 `inScope`，同一个 junction
- * 会让 agent 直接起在那个目标目录里，后果比写一个文件大得多。所以它是工作区
- * 隔离的既有边界，而不是上传端点的漏洞——设计文档 §9 也写明「隔离管的是视图，
- * 不是 agent」、owner 明确表示朋友可信、不做权限管控。
- *
- * 要收紧就得在 `inScope` 那一层收（两边都 realpath），而那会改掉 createSession
- * 的行为、并给每次会话列表过滤加上 realpath 的系统调用——是一笔要 owner 拍板
- * 的账，不该顺手改。
+ * 调用方按访客的工作区验证 cwd。创建附件前还要排除公开资源目录，避免文件经静态服务公开。
  */
-export function uploadTarget(cwd, rawName, { mkdir = true } = {}) {
+export function uploadTarget(cwd, rawName, { mkdir = true, webRoots = undefined, pinnedCwd = false } = {}) {
   const name = safeName(rawName);
   if (!name) throw new Error('文件名为空或全是非法字符。');
   if (!cwd) throw new Error('这个会话没有工作目录，无处存放。');
 
-  const realCwd = fs.realpathSync(cwd); // cwd 本身不存在就在这里抛，正好
+  const realCwd = canonicalCwd(cwd, pinnedCwd);
   const dir = path.join(realCwd, UPLOAD_DIR);
+  if (mkdir && inWebRoot(dir, webRoots)) {
+    throw Object.assign(new Error('客户端公开资源目录不能存放附件。'), { code: 'PUBLIC_UPLOAD_DIR' });
+  }
   let createdDir = false;
   if (mkdir && !lexicalExists(dir)) {
     fs.mkdirSync(dir, { recursive: true });
@@ -165,7 +156,7 @@ export function uploadTarget(cwd, rawName, { mkdir = true } = {}) {
   }
 
   // realpath 要求路径已存在，所以只对目录做——文件还没写出来
-  const realDir = fs.realpathSync(dir);
+  const realDir = fs.realpathSync.native(dir);
   if (realDir !== path.join(realCwd, UPLOAD_DIR)
     && !realDir.startsWith(realCwd + path.sep)) {
     throw new Error(`${UPLOAD_DIR} 指向了工作目录之外，拒绝写入。`);
@@ -201,34 +192,27 @@ export function uploadTarget(cwd, rawName, { mkdir = true } = {}) {
  *
  * **不加 mkdir**：读取不该有副作用，而且目录不存在本身就是「没有可读的东西」。
  */
-export function readUpload({
-  cwd,
-  name,
-  maxBytes = MAX_BYTES,
-  read = fs.readFileSync,
-  stat = fs.statSync,
-  lstat = stat === fs.statSync ? fs.lstatSync : null,
-  realpath = stat === fs.statSync ? fs.realpathSync : null,
-}) {
-  const t = uploadTarget(cwd, name, { mkdir: false });
-  if (lstat) {
-    const lst = lstat(t.full);
-    if (lst.isSymbolicLink()) throw new Error('拒绝读取符号链接。');
-  }
-  const st = stat(t.full); // 不存在就抛，交给调用方转 404
-  if (!st.isFile()) throw new Error('不是一个文件。');
-  if (st.size > maxBytes) {
-    throw Object.assign(new Error(`文件过大（超过 ${Math.round(maxBytes / 1048576)} MB 上限）。`), {
-      code: 'UPLOAD_TOO_LARGE',
-    });
-  }
-  if (realpath) {
-    const realFile = realpath(t.full);
-    if (realFile !== t.full && !realFile.startsWith(t.dir + path.sep)) {
-      throw new Error('文件指向了上传目录之外。');
+export async function readUpload({ cwd, name, maxBytes = MAX_BYTES, pinnedCwd = false }) {
+  const t = uploadTarget(cwd, name, { mkdir: false, pinnedCwd });
+  if (fs.lstatSync(t.full).isSymbolicLink()) throw new Error('拒绝读取符号链接。');
+  const file = await openVerifiedFile(t.dir, t.full);
+  try {
+    if (file.size > maxBytes) {
+      throw Object.assign(new Error(`文件过大（超过 ${Math.round(maxBytes / 1048576)} MB 上限）。`), {
+        code: 'UPLOAD_TOO_LARGE',
+      });
     }
+    const bytes = Buffer.allocUnsafe(file.size);
+    let length = 0;
+    while (length < bytes.length) {
+      const n = fs.readSync(file.fd, bytes, length, bytes.length - length, length);
+      if (!n) break;
+      length += n;
+    }
+    return { bytes: bytes.subarray(0, length), name: t.name, size: length };
+  } finally {
+    fs.closeSync(file.fd);
   }
-  return { bytes: read(t.full), name: t.name, size: st.size };
 }
 
 function lexicalExists(p) {
@@ -253,12 +237,12 @@ export function uniquePath(full, { exists = lexicalExists } = {}) {
   throw new Error('同名文件太多了。');
 }
 
-export function saveUpload({ cwd, name, bytes }) {
+export function saveUpload({ cwd, name, bytes, webRoots = undefined, pinnedCwd = false }) {
   if (!bytes?.length) throw new Error('文件是空的。');
   if (bytes.length > MAX_BYTES) {
     throw new Error(`文件过大（${(bytes.length / 1048576).toFixed(1)} MB，上限 ${MAX_BYTES / 1048576} MB）。`);
   }
-  const t = uploadTarget(cwd, name);
+  const t = uploadTarget(cwd, name, { webRoots, pinnedCwd });
   let full;
   for (let attempt = 0; attempt < 5; attempt += 1) {
     full = uniquePath(t.full);

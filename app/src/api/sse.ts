@@ -102,8 +102,8 @@ export async function* readFrames(
       const r = parseChunk(buf);
       buf = r.rest;
       if (r.heardFromServer) onHeartbeat?.();
-      if (r.lastId) onId?.(r.lastId);
       for (const f of r.frames) yield f;
+      if (r.lastId) onId?.(r.lastId);
     }
   } finally {
     try {

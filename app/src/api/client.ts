@@ -1,6 +1,8 @@
 import { fetch as expoFetch } from 'expo/fetch';
+import { Platform } from 'react-native';
 import { classifyProbe, probeOf } from './classify';
 import { readFrames } from './sse';
+import type { CreationStatus } from './creationStatus';
 import type {
   Agent,
   ApiError, DeviceItem, DirCreated, DirListing, Effort, EventFull, EventPage, Health, LinkAxis,
@@ -44,6 +46,8 @@ export class LinkError extends Error {
 export type ClientConfig = {
   baseUrl: string;
   token: string | null;
+  isActive?: () => boolean;
+  onHealth?: (health: Health) => void;
   /** 收到任何服务器响应时调用，用于刷新"最后一次听到服务器"——秒表活性靠它 */
   onHeard?: () => void;
   /** 传输轴变化时调用 */
@@ -52,16 +56,20 @@ export type ClientConfig = {
 
 export function createClient(cfg: ClientConfig) {
   const { baseUrl } = cfg;
+  const token = Platform.OS === 'web' ? null : cfg.token;
 
   const headers = (extra?: Record<string, string>) => ({
-    ...(cfg.token ? { Authorization: `Bearer ${cfg.token}` } : {}),
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
     ...extra,
   });
 
   async function raw(path: string, init?: RequestInit): Promise<Response> {
+    if (cfg.isActive && !cfg.isActive()) throw new BatonError(401, null);
     let res: Response;
     try {
       res = (await expoFetch(`${baseUrl}${path}`, {
+        credentials: token ? 'omit' : 'same-origin',
+        redirect: 'error',
         ...init,
         headers: headers(init?.headers as Record<string, string> | undefined),
       })) as unknown as Response;
@@ -71,6 +79,7 @@ export function createClient(cfg: ClientConfig) {
       throw new LinkError('offline', (err as Error)?.message ?? '网络不可达');
     }
 
+    if (cfg.isActive && !cfg.isActive()) throw new BatonError(401, null);
     const link = classifyProbe(probeOf(res));
     cfg.onLink?.(link);
     cfg.onHeard?.();
@@ -87,7 +96,9 @@ export function createClient(cfg: ClientConfig) {
       const body = (await res.json().catch(() => null)) as ApiError | null;
       throw new BatonError(res.status, body);
     }
-    return (await res.json()) as T;
+    const result = await res.json() as T;
+    if (cfg.isActive && !cfg.isActive()) throw new BatonError(401, null);
+    return result;
   }
 
   const enc = encodeURIComponent;
@@ -103,6 +114,7 @@ export function createClient(cfg: ClientConfig) {
      * 配对码 12 位，字母表去掉了易混的 0O1I，所以这里可以放心 toUpperCase()。
      */
     async pairForBearer(code: string): Promise<string> {
+      if (Platform.OS === 'web') throw new Error('Browser pairing requires a cookie');
       const res = await raw('/api/pair', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -118,7 +130,17 @@ export function createClient(cfg: ClientConfig) {
       return body.bearer;
     },
 
-    health: () => json<Health>('/api/health'),
+    pairWithCookie: (code: string) => json<{ ok: true; deviceId?: string }>('/api/pair', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ code: code.trim().toUpperCase() }),
+    }),
+
+    async health() {
+      const health = await json<Health>('/api/health');
+      cfg.onHealth?.(health);
+      return health;
+    },
 
     devices: () => json<{ devices: DeviceItem[] }>('/api/devices'),
 
@@ -332,11 +354,18 @@ export function createClient(cfg: ClientConfig) {
      * `when: 'now'` = 人自己按了「立刻发送」，不要为「电脑上那轮在跑」排队。
      * 服务端只放行这一条；Baton 自己那一轮照样挡着（要插队得先停掉它）。
      */
-    send: (key: string, message: string, fork = false, when: 'auto' | 'now' | 'interrupt' = 'auto') =>
+    send: (key: string, message: string, fork = false, when: 'auto' | 'now' | 'interrupt' = 'auto', requestId?: string) =>
       json<SendResult>(`/api/sessions/${enc(key)}/send`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ message, fork, when }),
+        body: JSON.stringify({ message, fork, when, requestId }),
+      }),
+
+    promoteQueued: (key: string, id: string) =>
+      json<SendResult>(`/api/sessions/${enc(key)}/queue/promote`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ id }),
       }),
 
     /** 撤回排着还没发出去的那一条。已经发出去了会回 404，如实告诉人，别假装撤掉了。 */
@@ -364,17 +393,18 @@ export function createClient(cfg: ClientConfig) {
       }),
 
     stop: (key: string, turnId: string) =>
-      json<{ turnId: string; stopped: boolean; note?: string }>(`/api/sessions/${enc(key)}/stop`, {
+      json<{ turnId: string; stopped: boolean; stopping?: boolean; note?: string }>(`/api/sessions/${enc(key)}/stop`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ turnId }),
       }),
 
+    creationStatus: (url: string, signal: AbortSignal) => json<CreationStatus>(url, { signal }),
     createSession: (
       agent: Agent, cwd: string, message: string,
       model?: string | null, effort?: Effort | null,
     ) =>
-      json<{ sessionId: string; key?: string | null; agent: string; cwd: string; registered: boolean; note: string }>(
+      json<{ sessionId: string | null; key?: string | null; status?: 'unconfirmed'; turnId?: string; statusUrl?: string; agent: string; cwd: string; registered: boolean; note: string }>(
         '/api/sessions',
         {
           method: 'POST',
@@ -407,10 +437,14 @@ export function createClient(cfg: ClientConfig) {
       opts?: { lastEventId?: string | null; onId?: (id: string) => void },
     ): () => void {
       const ctrl = new AbortController();
+      if (cfg.isActive && !cfg.isActive()) return () => {};
 
       (async () => {
         try {
-          const res = (await expoFetch(`${baseUrl}/api/sessions/${enc(key)}/stream`, {
+          const from = opts?.lastEventId == null ? '' : `?from=${enc(opts.lastEventId)}`;
+          const res = (await expoFetch(`${baseUrl}/api/sessions/${enc(key)}/stream${from}`, {
+            credentials: token ? 'omit' : 'same-origin',
+            redirect: 'error',
             headers: headers({
               Accept: 'text/event-stream',
               ...(opts?.lastEventId ? { 'Last-Event-ID': opts.lastEventId } : {}),

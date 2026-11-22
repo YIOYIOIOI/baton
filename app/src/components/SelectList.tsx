@@ -44,11 +44,12 @@ export type Option<T extends string> = {
 };
 
 export function SelectList<T extends string>({
-  options, value, onPick,
+  options, value, onPick, disabled = false,
 }: {
   options: readonly Option<T>[];
   value: T | null;
   onPick: (id: T) => void;
+  disabled?: boolean;
 }) {
   const t = useTheme();
   const s = styles(t);
@@ -58,18 +59,19 @@ export function SelectList<T extends string>({
     <View style={s.card}>
       {options.map((o, i) => {
         const on = o.id === value;
+        const off = disabled || !!o.disabled;
         return (
           <Tappable
             key={o.id}
-            style={[s.row, i > 0 && s.line, o.disabled && s.off]}
-            feedback={o.disabled ? 'none' : 'fill'}
-            disabled={o.disabled}
+            style={[s.row, i > 0 && s.line, off && s.off]}
+            feedback={off ? 'none' : 'fill'}
+            disabled={off}
             // 选中即生效，没有「确定」——这是设置不是表单。破坏性的那一档由
             // 调用方再套一层确认，那是它的事，不是这个组件的事。
             haptic={o.danger ? haptics.thud : haptics.select}
             onPress={() => onPick(o.id)}
             accessibilityRole="button"
-            accessibilityState={{ selected: on, disabled: !!o.disabled }}
+            accessibilityState={{ selected: on, disabled: off }}
           >
             <View style={s.text}>
               <View style={s.titleRow}>

@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import {
   buildLaunchdPlist,
   buildSystemdUnit,
@@ -46,7 +47,7 @@ test('buildWindowsStartupScript targets start-daemon.ps1 safely', () => {
     port: 3002,
     readOnly: true,
   });
-  assert.match(cmd, /powershell\.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden/);
+  assert.match(cmd, /pwsh\.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden/);
   assert.match(cmd, /start-daemon\.ps1/);
   assert.match(cmd, /-Port 3002/);
   assert.match(cmd, /-ReadOnly/);
@@ -79,4 +80,26 @@ test('targetPathForPlatform computes expected paths for all 3 OSes', () => {
     targetPathForPlatform('win32', 'C:\\Users\\alice', 'C:\\Users\\alice\\AppData\\Roaming'),
     path.join('C:\\Users\\alice\\AppData\\Roaming', 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup', 'Baton.cmd'),
   );
+});
+
+test('launchd and systemd retain the install-time data directory with platform-specific escaping', () => {
+  const dataDir = '/home/alice/Baton & "operators" %h/$TEAM\\archive';
+  const plist = buildLaunchdPlist({ dataDir });
+  assert.match(plist, /<key>BATON_DIR<\/key>\s*<string>\/home\/alice\/Baton &amp; &quot;operators&quot; %h\/\$TEAM\\archive<\/string>/);
+  const unit = buildSystemdUnit({ dataDir });
+  assert.ok(unit.split('\n').includes('Environment="BATON_DIR=/home/alice/Baton & \\"operators\\" %%h/$TEAM\\\\archive"'));
+  const dir = tmpDir('baton-unit-output-');
+  const configured = path.join(tmpDir('baton-config-'), 'team & %h');
+  for (const platform of ['darwin', 'linux']) {
+    execFileSync(process.execPath, ['scripts/install-autostart.mjs', '--platform', platform, '--dir', dir],
+      { env: { ...process.env, BATON_DIR: configured } });
+  }
+  assert.ok(fs.readFileSync(path.join(dir, 'dev.baton.daemon.plist'), 'utf8').includes(configured.replace('&', '&amp;')));
+  assert.ok(fs.readFileSync(path.join(dir, 'baton.service'), 'utf8').includes(configured.replaceAll('\\', '\\\\').replace('%', '%%')));
+});
+
+test('Windows recovery verifies registered process, native start time, and absolute script argument', { skip: process.platform !== 'win32' }, () => {
+  const pwsh = path.join(process.env.ProgramW6432 || process.env.ProgramFiles, 'PowerShell', '7', 'pwsh.exe');
+  execFileSync(pwsh, ['-NoProfile', '-NonInteractive', '-File', path.resolve('test/fixtures/windows-supervision-check.ps1'),
+    '-Scripts', path.resolve('scripts'), '-Fixture', tmpDir('baton-registered-process-'), '-Node', process.execPath], { timeout: 40000, windowsHide: true });
 });

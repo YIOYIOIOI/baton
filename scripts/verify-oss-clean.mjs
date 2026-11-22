@@ -13,6 +13,8 @@ const FORBIDDEN_BASENAMES = new Set([
   'principals.json',
   'revoked.json',
   'devices.json',
+  'daemon-process.json',
+  'daemon-wrapper.json',
   'push.json',
   'CLAUDE.local.md',
   'pairing-qr.svg',
@@ -36,6 +38,7 @@ const SYNTHETIC_USERS = new Set([
 const TEXT_EXTS = new Set([
   '.js', '.mjs', '.cjs', '.ts', '.tsx', '.jsx', '.json', '.md', '.txt',
   '.css', '.html', '.yml', '.yaml', '.ps1', '.sh', '.cmd', '.svg', '.plist',
+  '.jsonl', '.ndjson', '.map', '.toml',
 ]);
 
 const SECRET_RULES = [
@@ -74,9 +77,6 @@ function isSyntheticHomeName(name) {
 export function scanText(relPath, content) {
   const findings = [];
   const norm = String(relPath).replace(/\\/g, '/');
-  const ext = path.posix.extname(norm).toLowerCase();
-  if (ext && !TEXT_EXTS.has(ext)) return findings;
-
   for (const rule of SECRET_RULES) {
     rule.re.lastIndex = 0;
     const m = rule.re.exec(content);
@@ -85,10 +85,12 @@ export function scanText(relPath, content) {
     }
   }
 
-  for (const m of content.matchAll(/(?:[A-Za-z]:\\+Users\\+|\/Users\/|\/home\/)([A-Za-z0-9._$%{}<>-]+)/g)) {
+  // Emscripten sets this exact virtual HOME in its browser runtime.
+  const homePaths = content.replace(/\bHOME:\s*(["'])\/home\/web_user\1/g, '');
+  for (const m of homePaths.matchAll(/(?:[A-Za-z]:\\+Users\\+|\/Users\/|\/home\/)([A-Za-z0-9._$%{}<>-]+)/g)) {
     const user = m[1];
     if (!isSyntheticHomeName(user)) {
-      findings.push(`${norm}: suspicious non-synthetic home path segment (${m[0]})`);
+      findings.push(`${norm}: suspicious non-synthetic home path segment`);
     }
   }
   return findings;
@@ -109,6 +111,15 @@ function gitBuf(args, cwd) {
   });
 }
 
+function scanBytes(rel, data) {
+  if (data[0] === 0xff && data[1] === 0xfe) return scanText(rel, data.toString('utf16le'));
+  if (data[0] === 0xfe && data[1] === 0xff && data.length % 2 === 0) return scanText(rel, data.swap16().toString('utf16le'));
+  if (!data.includes(0)) return scanText(rel, data.toString('utf8'));
+  if (TEXT_EXTS.has(path.posix.extname(rel).toLowerCase())) return [`${rel}: unexpected NUL in text file`];
+  // Compiled assets can still carry literal strings in their data sections.
+  return scanText(rel, data.toString('latin1'));
+}
+
 export function verifyRepoClean({ cwd = process.cwd(), ref = null, orphan = false } = {}) {
   const errors = [];
 
@@ -116,9 +127,9 @@ export function verifyRepoClean({ cwd = process.cwd(), ref = null, orphan = fals
     if (!ref) {
       errors.push('--orphan requires --ref <git-ref>');
     } else {
-      const count = Number(git(['rev-list', '--count', ref], cwd).trim());
-      if (count !== 1) {
-        errors.push(`expected single-commit orphan history on ${ref}, got ${count} commits`);
+      const headers = git(['cat-file', '-p', `${ref}^{commit}`], cwd).split('\n\n', 1)[0];
+      if (/^parent /m.test(headers)) {
+        errors.push(`expected a zero-parent commit on ${ref}`);
       }
     }
   }
@@ -159,33 +170,60 @@ export function verifyRepoClean({ cwd = process.cwd(), ref = null, orphan = fals
       }
       buf = fs.readFileSync(abs);
     }
-    if (buf.includes(0)) continue;
-    errors.push(...scanText(rel, buf.toString('utf8')));
+    errors.push(...scanBytes(rel, buf));
   }
 
   return { ok: errors.length === 0, checkedFiles: files.length, errors };
 }
 
+// The package includes generated and ignored files that never appear in Git's tree.
+export function verifyReleaseTree(root) {
+  const errors = [];
+  let checkedFiles = 0;
+  function visit(dir) {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const file = path.join(dir, entry.name);
+      const rel = path.relative(root, file).split(path.sep).join('/');
+      errors.push(...scanPathName(rel));
+      if (entry.isDirectory()) {
+        visit(file);
+        continue;
+      }
+      checkedFiles++;
+      if (!entry.isFile()) {
+        errors.push(`non-regular release entry: ${rel}`);
+        continue;
+      }
+      errors.push(...scanBytes(rel, fs.readFileSync(file)));
+    }
+  }
+  visit(root);
+  return { ok: errors.length === 0, checkedFiles, errors };
+}
+
 function parseArgs(argv) {
   let ref = null;
   let orphan = false;
+  let releaseDir = null;
   for (let i = 0; i < argv.length; i += 1) {
     if (argv[i] === '--ref' && argv[i + 1]) ref = argv[++i];
+    else if (argv[i] === '--release-dir' && argv[i + 1]) releaseDir = argv[++i];
     else if (argv[i] === '--orphan') orphan = true;
     else throw new Error(`Unknown flag: ${argv[i]}`);
   }
-  return { ref, orphan };
+  if (releaseDir && (ref || orphan)) throw new Error('--release-dir scans an unpacked package independently of Git.');
+  return { ref, orphan, releaseDir };
 }
 
 function main() {
-  const { ref, orphan } = parseArgs(process.argv.slice(2));
-  const res = verifyRepoClean({ ref, orphan });
+  const { ref, orphan, releaseDir } = parseArgs(process.argv.slice(2));
+  const res = releaseDir ? verifyReleaseTree(releaseDir) : verifyRepoClean({ ref, orphan });
   if (!res.ok) {
     console.error(`oss:check FAILED (${res.errors.length} finding(s) across ${res.checkedFiles} files):`);
     for (const e of res.errors) console.error(`  - ${e}`);
     process.exit(1);
   }
-  console.log(`oss:check OK (${res.checkedFiles} tracked files clean${ref ? `, ref=${ref}` : ''}${orphan ? ', orphan=1' : ''})`);
+  console.log(`oss:check OK (${res.checkedFiles} ${releaseDir ? 'packaged' : 'tracked'} files clean${ref ? `, ref=${ref}` : ''}${orphan ? ', orphan=1' : ''})`);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {

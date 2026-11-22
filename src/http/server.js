@@ -1,5 +1,6 @@
 import http from 'node:http';
 import fs from 'node:fs';
+import { finished } from 'node:stream';
 import { errorBody } from './errors.js';
 import { postAsk } from './handlers/ask.js';
 import { ASK_HEADER } from '../ask/protocol.js';
@@ -33,44 +34,78 @@ function send(res, status, body, headers = {}) {
   res.end(JSON.stringify(body));
 }
 
-/**
- * 读请求体，**边读边数，超了立刻掐断连接**。
- *
- * 不是读完再判长度：那样一个 2 GB 的请求已经在内存里了，判不判都晚了。
- * 之前只有 JSON 一条路且下游还有字数限制，勉强兜得住；现在加了原始字节的
- * 上传端点，这个洞就不是理论上的了。
- */
-async function readBody(req, limit) {
-  const chunks = [];
-  let n = 0;
-  for await (const c of req) {
-    n += c.length;
-    if (n > limit) {
-      req.destroy();
-      throw new BodyTooLarge(limit);
-    }
-    chunks.push(c);
-  }
-  return Buffer.concat(chunks);
+class BodyTooLarge extends Error {}
+class BodyBudgetBusy extends Error {}
+class BodyTimedOut extends Error {}
+
+function bodyCapacity(req, limit) {
+  const declared = req.headers['content-length'];
+  const capacity = declared === undefined ? (req.headers['transfer-encoding'] ? limit : 0) : Number(declared);
+  if (!Number.isSafeInteger(capacity) || capacity < 0 || capacity > limit) throw new BodyTooLarge();
+  return capacity;
 }
 
-class BodyTooLarge extends Error {
-  constructor(limit) {
-    super(`请求体超过 ${Math.round(limit / 1048576)} MB。`);
-    this.limit = limit;
-  }
+// The deadline applies to the entire pairing body, including a client that keeps sending small pieces.
+function receivePairBody(req, capacity, timeoutMs) {
+  const bytes = Buffer.allocUnsafe(capacity);
+  return new Promise((resolve, reject) => {
+    let length = 0;
+    const timer = setTimeout(() => finish(new BodyTimedOut()), timeoutMs);
+    timer.unref();
+    const unwatch = finished(req, { readable: true, writable: false }, finish);
+    function append(chunk) {
+      if (chunk.length > capacity - length) { finish(new BodyTooLarge()); return; }
+      chunk.copy(bytes, length);
+      length += chunk.length;
+    }
+    function finish(err) {
+      clearTimeout(timer);
+      unwatch();
+      req.off('data', append);
+      if (err) {
+        req.pause();
+        req.once('error', () => {}); // the client can still disconnect before the error response is flushed
+        reject(err);
+      } else {
+        resolve(bytes.subarray(0, length));
+      }
+    }
+    req.on('data', append);
+  });
+}
+
+// 每个请求只分配一份缓冲。分块传输在开始时预留该路由的最大容量。
+function bodyReader(budget) {
+  let reserved = 0;
+  return async function readBody(req, limit, consume) {
+    const capacity = bodyCapacity(req, limit);
+    if (capacity > budget - reserved) throw new BodyBudgetBusy();
+    reserved += capacity;
+    try {
+      const bytes = Buffer.allocUnsafe(capacity);
+      let length = 0;
+      for await (const chunk of req.iterator({ destroyOnReturn: false })) {
+        if (chunk.length > capacity - length) throw new BodyTooLarge();
+        chunk.copy(bytes, length);
+        length += chunk.length;
+      }
+      return await consume(bytes.subarray(0, length));
+    } finally {
+      reserved -= capacity;
+    }
+  };
 }
 
 // JSON 体的上限。最长的合法 JSON 请求是发消息（正文上限 10 万字符），
 // 按最坏情况的 UTF-8 膨胀 + 转义算，2 MB 绰绰有余。
 const MAX_JSON = 2 * 1024 * 1024;
+const MAX_PAIR_BODY = 1024; // a 12-character code and an optional response format
 
-async function readJson(req) {
+function parseBodyJson(bytes) {
   let v;
   try {
-    v = JSON.parse((await readBody(req, MAX_JSON)).toString('utf8') || '{}');
-  } catch (err) {
-    if (err instanceof BodyTooLarge) throw err;
+    v = JSON.parse(bytes.toString('utf8') || '{}');
+  } catch {
     return {}; // 坏 JSON 当空对象，由各 handler 自己校验必填字段
   }
   // 只收对象。`null`、数组、数字都是合法 JSON，而各 handler 都按对象解构——
@@ -134,11 +169,35 @@ function isCrossOriginWrite(req, pathname, config) {
   return false;
 }
 
-export function createServer({ repo, auth, config }) {
+export function createServer({ repo, auth, config, maxBodyBytesInFlight = 64 * 1024 * 1024,
+  maxPairBodiesInFlight = 8, pairBodyTimeoutMs = 10_000 }) {
   // 路由表来自 routes.js（唯一真源），这里只负责分发——
   // 不再有散落的正则与 if 链，也就不会再出现「分支永远进不去」
   const routes = buildRoutes({ auth });
-  // 哪套客户端在生效，进程启动时定一次——每个请求都去 stat 一遍没有意义
+  const readBody = bodyReader(maxBodyBytesInFlight);
+  let pendingPairBodies = 0;
+  async function readPairBody(req) {
+    const capacity = bodyCapacity(req, MAX_PAIR_BODY);
+    if (pendingPairBodies >= maxPairBodiesInFlight) throw new BodyBudgetBusy();
+    pendingPairBodies++;
+    try {
+      return parseBodyJson(await receivePairBody(req, capacity, pairBodyTimeoutMs));
+    } finally {
+      pendingPairBodies--;
+    }
+  }
+  const readJson = (req) => readBody(req, MAX_JSON, parseBodyJson);
+  const unauthorized = (reason) => errorBody('unauthorized', reason,
+    '在跑着 Baton 的电脑上执行 npm run pair 取得配对码，在页面顶部的输入框里录入即可。');
+
+  function accessContext(authorized) {
+    const principal = authorized.principal;
+    return {
+      principal, deviceId: authorized.deviceId ?? null, isLegacy: authorized.isLegacy ?? false,
+      repo: scopeRepo(repo, principal),
+      config: { ...config, allowSend: config.allowSend === true && (principal.allowSend ?? true) },
+    };
+  }
 
   async function handle(req, res) {
     let parsed;
@@ -202,7 +261,7 @@ export function createServer({ repo, auth, config }) {
         return;
       }
       const secure = isSecureRequest(req);
-      const { code, want } = await readJson(req);
+      const { code, want } = await readPairBody(req);
       const r = auth.verifyPair(code, { secure, userAgent: String(req.headers['user-agent'] ?? '') });
       if (!r.ok) {
         auth.noteFailure(ip);
@@ -216,7 +275,7 @@ export function createServer({ repo, auth, config }) {
       } catch { /* ignore */ }
       // 原生客户端读不到 Set-Cookie，要显式索取 bearer。网页端不传 want，
       // 就拿不到这个值——HttpOnly 对网页那条路径因此仍然作数。
-      const body = want === 'bearer' ? { ok: true, bearer: r.bearer } : { ok: true };
+      const body = { ok: true, deviceId: r.deviceId, ...(want === 'bearer' ? { bearer: r.bearer } : {}) };
       send(res, 200, body, { 'Set-Cookie': r.setCookie });
       return;
     }
@@ -250,6 +309,12 @@ export function createServer({ repo, auth, config }) {
     */
     if (pathname === '/api/ask' && req.method === 'POST') {
       const who = resolveAskToken(req.headers[ASK_HEADER]);
+      if (!who) {
+        const denied = await postAsk({ headers: req.headers, body: {} });
+        send(res, denied.status, denied.body, { Connection: 'close' });
+        return;
+      }
+      const body = await readJson(req);
       let settled = false;
       /*
         连接断了 = 那一轮的进程没了（被停止、超时被杀、claude 自己退了）。
@@ -263,14 +328,8 @@ export function createServer({ repo, auth, config }) {
         那时这道题早已答完，不该再去撤一道**后来新开的**题。
       */
       res.on('close', () => {
-        if (!settled && who) cancelAsk(who.key);
+        if (!settled) cancelAsk(who.key);
       });
-      let body = {};
-      try {
-        body = await readJson(req);
-      } catch {
-        return; // 请求体都没读完就断了，close 处理器已经收尾
-      }
       const r = await postAsk({ headers: req.headers, body });
       settled = true;
       if (!res.writableEnded && !res.destroyed) send(res, r.status, r.body);
@@ -279,41 +338,39 @@ export function createServer({ repo, auth, config }) {
 
     const authed = auth.authorize(req);
     if (!authed.ok) {
-      send(res, 401, errorBody('unauthorized', authed.reason,
-        '在跑着 Baton 的电脑上执行 npm run pair 取得配对码，在页面顶部的输入框里录入即可。'));
+      send(res, 401, unauthorized(authed.reason), {
+        'Cache-Control': 'private, no-store', ...(req.method === 'POST' ? { Connection: 'close' } : {}),
+      });
       return;
     }
-
-    const { principal } = authed;
-    // 作用域：owner 的 roots 为 null，scopeRepo 原样返回同一个 repo，零开销。
-    // 这一层一包，九个涉及会话的端点全部自动收口——它们都以 repo.getSession()
-    // 或 repo.listChains() 开头，handler 一行不用改。
-    const scopedRepo = scopeRepo(repo, principal);
-    // Enforce global config.allowSend as a hard ceiling (e.g. --read-only) so
-    // per-principal allowSend overrides can only tighten, never loosen, write access.
-    const effectiveConfig = { ...config, allowSend: config.allowSend === true && (principal.allowSend ?? true) };
 
     for (const route of routes) {
       if (route.method !== req.method) continue;
       const match = route.match(pathname);
       if (match === null) continue;
-      let body = {};
-      let raw;
-      try {
-        if (route.rawBody) raw = await readBody(req, MAX_UPLOAD);
-        else if (route.needsBody) body = await readJson(req);
-      } catch (err) {
-        if (err instanceof BodyTooLarge) {
-          send(res, 413, errorBody('body_too_large', err.message, '选小一点的文件，或在电脑上直接放进项目目录。'));
-          return;
-        }
-        throw err;
+      const context = {
+        match, query: parsed.searchParams, req, res,
+        ...accessContext(authed),
+      };
+      const pre = route.preflight?.(context);
+      if (pre?.status) {
+        send(res, pre.status, pre.body, { Connection: 'close' });
+        return;
       }
-      const out = await route.run({
-        match, body, raw, query: parsed.searchParams, req, res,
-        principal, deviceId: authed.deviceId ?? null, isLegacy: authed.isLegacy ?? false,
-        repo: scopedRepo, config: effectiveConfig,
-      });
+      const runAfterRead = (body, raw = undefined) => {
+        const current = auth.authorize(req);
+        if (!current.ok || current.principal.id !== context.principal.id || current.principal.generation !== context.principal.generation
+            || (current.deviceId ?? null) !== context.deviceId) {
+          return { status: 401, body: unauthorized('设备配对状态已改变。') };
+        }
+        const fresh = { ...context, ...accessContext(current), body, raw };
+        const denied = route.preflight?.(fresh);
+        return denied?.status ? denied : route.run(fresh);
+      };
+      let out;
+      if (route.rawBody) out = await readBody(req, MAX_UPLOAD, (raw) => runAfterRead({}, raw));
+      else if (route.needsBody) out = await runAfterRead(await readJson(req));
+      else out = await route.run({ ...context, body: {} });
       if (out) send(res, out.status, out.body); // out 为 null 表示响应已被接管（SSE）
       return;
     }
@@ -333,6 +390,19 @@ export function createServer({ repo, auth, config }) {
   */
   return http.createServer((req, res) => {
     handle(req, res).catch((err) => {
+      if (res.destroyed) return;
+      if (!res.headersSent && err instanceof BodyTooLarge) {
+        send(res, 413, errorBody('body_too_large', '请求正文超过上限。', '缩小文件或消息后重试。'), { Connection: 'close' });
+        return;
+      }
+      if (!res.headersSent && err instanceof BodyBudgetBusy) {
+        send(res, 503, errorBody('body_budget_busy', '其他请求正在传输数据。', '稍后重试。'), { Connection: 'close', 'Retry-After': '1' });
+        return;
+      }
+      if (!res.headersSent && err instanceof BodyTimedOut) {
+        send(res, 408, errorBody('body_timeout', '配对请求未在限定时间内传完。', '请重新提交配对码。'), { Connection: 'close' });
+        return;
+      }
       console.error(`  ⚠ ${req.method} ${String(req.url).split('?')[0]} 处理时抛了异常：`, err?.stack ?? err);
       if (res.headersSent) {
         res.destroy();

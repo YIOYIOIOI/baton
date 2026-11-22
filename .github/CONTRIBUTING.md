@@ -34,6 +34,10 @@ docs/        Architecture & agent protocol specifications
 # Full backend check (oxlint --deny-warnings + tsc + all Node tests)
 npm run check
 
+# End-to-end checks with the compiled desktop and mobile web clients
+npm run build
+npm run test:e2e
+
 # Individual test file safely
 node --test --import ./test/setup.js test/your-file.test.js
 
@@ -42,7 +46,7 @@ npm --prefix web run lint
 npx --prefix web tsc -b --noEmit
 
 # Mobile / Expo UI verification
-npx --prefix app tsc --noEmit
+npx --prefix app tsc --noEmit -p app/tsconfig.json
 npm --prefix app run lint
 npm --prefix app test -- --watchAll=false
 
@@ -64,7 +68,8 @@ npm run oss:check
 ## Pull Request Checklist
 
 - [ ] `npm run check` passes (`0` warnings/errors, all tests green)
+- [ ] Both compiled clients pass `npm run test:e2e` against an isolated daemon. Set `BATON_E2E_BROWSER` when Chromium is installed in a custom location.
 - [ ] `npm --prefix web run lint && npx --prefix web tsc -b --noEmit` passes (if touching `web/`)
-- [ ] `npx --prefix app tsc --noEmit && npm --prefix app run lint && npm --prefix app test -- --watchAll=false` passes (if touching `app/`)
+- [ ] `npx --prefix app tsc --noEmit -p app/tsconfig.json && npm --prefix app run lint && npm --prefix app test -- --watchAll=false` passes (if touching `app/`)
 - [ ] `npm run oss:check` passes cleanly (no hardcoded personal paths, domains, or tokens)
 - [ ] Documentation updated ([`README.md`](../README.md), [`docs/README.zh-CN.md`](../docs/README.zh-CN.md), [`docs/installation.md`](../docs/installation.md), [`CHANGELOG.md`](../CHANGELOG.md)) if user-facing behavior changed

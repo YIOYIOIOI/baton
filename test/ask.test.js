@@ -289,7 +289,7 @@ test('新建会话那一轮不开提问通道：那一屏根本没有地方显�
 
 /* ── HTTP 端到端 ──────────────────────────────────────────────────────── */
 
-test('POST /api/ask 一直挂着，直到有人在会话里答了它', async () => {
+test('POST /api/ask 一直挂着，直到有人在会话里答了它', async (t) => {
   await withServer(async ({ base, auth, repo }) => {
     const key = repo.listChains()[0].members[0].key;
     const token = mintAskToken({ key, turnId: 'turn-x' });
@@ -302,7 +302,7 @@ test('POST /api/ask 一直挂着，直到有人在会话里答了它', async () 
     }).then(async (r) => { settled = true; return r.json(); });
 
     // 给它时间走到「挂起」为止；此时绝不能已经返回
-    await new Promise((r) => setTimeout(r, 120));
+    await t.waitFor(() => assert.ok(pendingAsk(key)));
     assert.equal(settled, false, '这条响应必须挂着——挂住它就是挂住 agent 那一轮');
     assert.equal(pendingAsk(key)?.question, '选哪个？');
 
@@ -345,7 +345,7 @@ test('参数不合格时把原因返给 agent，让它改正而不是把半张�
   });
 });
 
-test('只读模式下答不进去——和发消息同一条纪律', async () => {
+test('只读模式下答不进去——和发消息同一条纪律', async (t) => {
   await withServer(async ({ base, auth, repo }) => {
     const key = repo.listChains()[0].members[0].key;
     const token = mintAskToken({ key, turnId: 'turn-z' });
@@ -354,7 +354,7 @@ test('只读模式下答不进去——和发消息同一条纪律', async () =>
       headers: { 'Content-Type': 'application/json', [ASK_HEADER]: token },
       body: JSON.stringify({ question: 'Q', options: ['甲', '乙'] }),
     }).then((r) => r.json());
-    await new Promise((r) => setTimeout(r, 120));
+    await t.waitFor(() => assert.ok(pendingAsk(key)));
 
     const res = await fetch(`${base}/api/sessions/${encodeURIComponent(key)}/answer`, {
       method: 'POST',
@@ -370,7 +370,7 @@ test('只读模式下答不进去——和发消息同一条纪律', async () =>
   }, { allowSend: false });
 });
 
-test('会话状态里带着待答问题——重连后那张卡要自己回来', async () => {
+test('会话状态里带着待答问题——重连后那张卡要自己回来', async (t) => {
   await withServer(async ({ base, auth, repo }) => {
     const key = repo.listChains()[0].members[0].key;
     const token = mintAskToken({ key, turnId: 'turn-w' });
@@ -379,7 +379,7 @@ test('会话状态里带着待答问题——重连后那张卡要自己回来',
       headers: { 'Content-Type': 'application/json', [ASK_HEADER]: token },
       body: JSON.stringify({ question: '还在等你', options: ['甲', '乙'] }),
     }).then((r) => r.json());
-    await new Promise((r) => setTimeout(r, 120));
+    await t.waitFor(() => assert.ok(pendingAsk(key)));
 
     const st = await fetch(`${base}/api/sessions/${encodeURIComponent(key)}/state`, {
       headers: { Cookie: cookieOf(auth) },
@@ -393,7 +393,7 @@ test('会话状态里带着待答问题——重连后那张卡要自己回来',
   });
 });
 
-test('访客答不了 owner 会话里的题——工作区隔离这条不能有例外', async () => {
+test('访客答不了 owner 会话里的题——工作区隔离这条不能有例外', async (t) => {
   /*
     这条是冲着已经栽过的那个口子来的：访客配对后看到了 owner 的工作区。
     答题端点是**新开的一条能把内容送进 agent 的路**，它必须和发消息受同一层约束。
@@ -424,7 +424,7 @@ test('访客答不了 owner 会话里的题——工作区隔离这条不能有�
       headers: { 'Content-Type': 'application/json', [ASK_HEADER]: token },
       body: JSON.stringify({ question: 'Q', options: ['甲', '乙'] }),
     }).then((r) => r.json());
-    await new Promise((r) => setTimeout(r, 120));
+    await t.waitFor(() => assert.ok(pendingAsk(key)));
 
     const guest = `baton_session=${/baton_session=([^;]+)/.exec(
       ctx.auth.verifyPair(ctx.auth.newPairingCode('friend')).setCookie,
@@ -445,7 +445,7 @@ test('访客答不了 owner 会话里的题——工作区隔离这条不能有�
   }
 });
 
-test('连接断了就撤题——那一轮的进程已经没了，卡留着也没人接', async () => {
+test('连接断了就撤题——那一轮的进程已经没了，卡留着也没人接', async (t) => {
   await withServer(async ({ base, repo }) => {
     const key = repo.listChains()[0].members[0].key;
     const token = mintAskToken({ key, turnId: 'turn-v' });
@@ -456,13 +456,12 @@ test('连接断了就撤题——那一轮的进程已经没了，卡留着也�
       body: JSON.stringify({ question: 'Q', options: ['甲', '乙'] }),
       signal: ctl.signal,
     }).catch(() => null);
-    await new Promise((r) => setTimeout(r, 120));
+    await t.waitFor(() => assert.ok(pendingAsk(key)));
     assert.ok(pendingAsk(key));
 
     ctl.abort();
     await held;
-    await new Promise((r) => setTimeout(r, 120));
-    assert.equal(pendingAsk(key), null);
+    await t.waitFor(() => assert.equal(pendingAsk(key), null));
     revokeAskToken(token);
   });
 });

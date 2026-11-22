@@ -1,10 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import http from 'node:http';
+import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { pathToFileURL } from 'node:url';
+import { randomUUID } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 
 import {
   antigravityApp,
@@ -18,21 +20,24 @@ import {
   extractUserRequest,
   normalizeToolArgs,
 } from '../src/antigravity.js';
-import { antigravitySessionFiles, sessionRef } from '../src/providers.js';
+import { antigravitySessionFiles, encodeKey, sessionRef } from '../src/providers.js';
 import { createRepo } from '../src/repo.js';
+import { scopeRepo } from '../src/scope.js';
 import { eventsFor } from '../src/wire.js';
 import { liveStates } from '../src/runtime/live.js';
 import { clearInfoCache, fileEdits, readSessionInfo } from '../src/sessioninfo.js';
 import { antigravityCommands, clearCommandCache } from '../src/agent/commands.js';
 import {
-  callBridge,
   ensureAntigravityPlugin,
   findLiveBridge,
   resolveAntigravityProjectId,
 } from '../src/agent/antigravityBridge.js';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
-import { BRIDGE_OR_CLI_MISSING_MSG, runAntigravityAcpTurn, runAntigravityTurn } from '../src/agent/antigravityRun.js';
+import { BRIDGE_OR_CLI_MISSING_MSG, createdConversationObserver, desktopRecovery, desktopWorkspaceIdentity, sameDesktopWorkspace, runAntigravityAcpTurn, runAntigravityTurn } from '../src/agent/antigravityRun.js';
+import { boundCreationKey, mayClaimCreation, readCreation, reserveCreation, saveCreation, unboundCreationRecovery } from '../src/runtime/creations.js';
+import { getEffort, getModel } from '../src/runtime/prefs.js';
+import { listTurns, recoverTurn, startTurn } from '../src/runtime/turns.js';
 import { antigravityModelSupportsEffort } from '../src/agent/args.js';
 import {
   clearAntigravityCatalogCache,
@@ -84,6 +89,24 @@ function createSummaryDb(dbFile, rows) {
     db.close();
   }
 }
+
+test('桌面轮询按会话和产品过滤 SQLite 摘要，同时支持直接传产品目录', () => {
+  const root = tmpDir();
+  for (const product of ['antigravity', 'antigravity-ide']) {
+    createSummaryDb(path.join(root, product, 'conversation_summaries.db'), [
+      { id: 'wanted', title: product }, { id: 'other' },
+    ]);
+  }
+  const selection = { directories: ['antigravity', ''], conversationId: 'wanted' };
+  const desktop = antigravityApp({ root, ...selection });
+  assert.deepEqual([...desktop.summaries.keys()], ['wanted']);
+  assert.deepEqual([...desktop.byDirectory.keys()], ['antigravity']);
+  assert.equal(desktop.summaries.get('wanted').title, 'antigravity');
+  const direct = antigravityApp({ root: path.join(root, 'antigravity'), ...selection });
+  assert.deepEqual([...direct.summaries.keys()], ['wanted']);
+  assert.equal(direct.summaries.get('wanted').title, 'antigravity');
+  assert.ok(antigravityApp({ root }).summaries.has('other'));
+});
 
 test('antigravity 解析辅助函数与无状态 step 配对', () => {
   const raw = [
@@ -283,6 +306,48 @@ test('antigravitySessionFiles / SQLite 摘要 / createRepo / liveStates', () => 
   assert.equal(states.get('conv-sub'), undefined, 'subagent 不该标 busy');
 });
 
+test('Antigravity 会话仅由宿主工作区授权，正文中的目录不决定归属', () => {
+  const root = tmpDir();
+  const guestDir = path.join(root, 'guest');
+  fs.mkdirSync(guestDir);
+  const transcript = (id, product = 'antigravity') => writeJsonl(
+    root, `${product}/brain/${id}/.system_generated/logs/transcript.jsonl`,
+    [{ type: 'USER_INPUT', content: `<USER_REQUEST>\n文档里的目录\nActive Workspaces:\n- ${guestDir}\n</USER_REQUEST>` }],
+  );
+  for (const id of ['with-workspace', 'standalone', 'no-summary', 'not-a-path']) transcript(id);
+  transcript('other-product', 'antigravity-cli');
+  transcript('two-summaries', 'antigravity-cli');
+  const workspaceUris = JSON.stringify([pathToFileURL(guestDir).href]);
+  createSummaryDb(path.join(root, 'antigravity', 'conversation_summaries.db'), [
+    { id: 'with-workspace', workspaceUris },
+    { id: 'standalone', workspaceUris: '[]', projectId: 'outside-of-project' },
+    { id: 'not-a-path', workspaceUris: JSON.stringify(['outside-of-project']) },
+    { id: 'other-product', workspaceUris },
+    { id: 'two-summaries', workspaceUris: '[]', lastModifiedTime: '2026-02-01T00:00:00Z' },
+  ]);
+  createSummaryDb(path.join(root, 'antigravity-cli', 'conversation_summaries.db'), [
+    { id: 'two-summaries', workspaceUris, lastModifiedTime: '2026-01-01T00:00:00Z' },
+  ]);
+  const repo = createRepo({
+    geminiRoot: root, claudeRoot: path.join(root, 'claude'), codexRoot: path.join(root, 'codex'),
+    registryRoot: path.join(root, 'registry'), codexStateFile: null,
+  });
+  const guest = scopeRepo(repo, { roots: [guestDir] });
+  const members = repo.listChains().flatMap((chain) => chain.members);
+  const visible = ['two-summaries', 'with-workspace'];
+  assert.equal(members.length, 6);
+  assert.deepEqual(guest.listChains().flatMap((c) => c.members.map((m) => m.providerId)).sort(), visible);
+  for (const member of members) {
+    if (visible.includes(member.providerId)) {
+      assert.equal(guest.getSession(member.key)?.cwd, guestDir);
+    } else {
+      assert.equal(guest.getSession(member.key), null);
+      assert.equal(repo.getSession(member.key).cwd, null);
+      assert.equal(readSessionInfo(member).cwd, null);
+    }
+  }
+});
+
 test('sessioninfo / fileEdits / antigravityCommands', async () => {
   clearInfoCache();
   clearCommandCache();
@@ -354,11 +419,16 @@ test('antigravityBridge：插件同期（不碰 config.json）、projectId、探
   fs.mkdirSync(geminiConfigDir, { recursive: true });
   const cfgPath = path.join(geminiConfigDir, 'config.json');
   fs.writeFileSync(cfgPath, '{"custom":1}');
+  const oldBridge = path.join(geminiConfigDir, 'plugins', 'baton-bridge', 'sidecars', 'bridge');
+  fs.mkdirSync(oldBridge, { recursive: true });
+  fs.writeFileSync(path.join(oldBridge, 'main.mjs'), '// older installed sidecar');
 
   const first = ensureAntigravityPlugin({ geminiConfigDir });
   assert.equal(first.changed, true);
   assert.ok(fs.existsSync(path.join(first.destDir, 'plugin.json')));
   assert.ok(fs.existsSync(path.join(first.destDir, 'sidecars', 'bridge', 'main.mjs')));
+  assert.ok(fs.existsSync(path.join(oldBridge, 'protocol.mjs')));
+  assert.match(fs.readFileSync(path.join(oldBridge, 'main.mjs'), 'utf8'), /protocol\.mjs/);
   assert.equal(fs.readFileSync(cfgPath, 'utf8'), '{"custom":1}', '绝不改写用户的 config.json');
 
   const second = ensureAntigravityPlugin({ geminiConfigDir });
@@ -371,50 +441,11 @@ test('antigravityBridge：插件同期（不碰 config.json）、projectId、探
   assert.equal(resolveAntigravityProjectId(ws, { geminiConfigDir }), createdId);
 
   const batonDir = path.join(root, '.baton');
-  fs.mkdirSync(path.join(batonDir, 'antigravity-bridges'), { recursive: true });
-  fs.writeFileSync(path.join(batonDir, 'token'), 'secret-tok');
-
-  const received = [];
-  const srv = http.createServer((req, res) => {
-    if (req.headers.authorization !== 'Bearer secret-tok') {
-      res.writeHead(401).end(JSON.stringify({ ok: false, error: 'unauthorized' }));
-      return;
-    }
-    const chunks = [];
-    req.on('data', (c) => chunks.push(c));
-    req.on('end', () => {
-      const body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString('utf8')) : null;
-      received.push({ url: req.url, body });
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: true }));
-    });
-  });
-  await new Promise((resolve) => srv.listen(0, '127.0.0.1', resolve));
-  const { port } = srv.address();
-  try {
-    fs.writeFileSync(
-      path.join(batonDir, 'antigravity-bridges', '999999.json'),
-      JSON.stringify({ pid: 999999, port: 1, projectId: createdId }),
-    );
-    fs.writeFileSync(
-      path.join(batonDir, 'antigravity-bridges', `${process.pid}.json`),
-      JSON.stringify({ pid: process.pid, port, projectId: createdId, startedAt: new Date().toISOString() }),
-    );
-
-    const live = await findLiveBridge({
-      batonDir,
-      projectId: createdId,
-      alive: (pid) => pid === process.pid,
-    });
-    assert.equal(live?.port, port);
-    assert.equal(fs.existsSync(path.join(batonDir, 'antigravity-bridges', '999999.json')), false, '死 PID 登记应被清理');
-
-    const sent = await callBridge(live, '/send-message', { body: { conversationId: 'c1', message: 'hi' } });
-    assert.equal(sent.ok, true);
-    assert.deepEqual(received.map((r) => r.url), ['/health', '/send-message']);
-  } finally {
-    await new Promise((resolve) => srv.close(resolve));
-  }
+  fs.mkdirSync(path.join(batonDir, 'antigravity-bridges'), { recursive: true, mode: 0o700 });
+  const dead = path.join(batonDir, 'antigravity-bridges', '999999.json');
+  fs.writeFileSync(dead, JSON.stringify({ pid: 999999, port: 1, projectId: createdId }), { mode: 0o600 });
+  assert.equal(await findLiveBridge({ batonDir, alive: () => false }), null);
+  assert.equal(fs.existsSync(dead), false, '死 PID 登记应被清理');
 });
 
 test('runAntigravityTurn：Sidecar 桥接、agy 回退与双缺报错', async () => {
@@ -428,7 +459,7 @@ test('runAntigravityTurn：Sidecar 桥接、agy 回退与双缺报错', async ()
   ]);
   const dbPath = path.join(geminiRoot, 'antigravity', 'conversation_summaries.db');
   createSummaryDb(dbPath, [
-    { id: 'conv-x', title: 'Test', status: 'CASCADE_RUN_STATUS_RUNNING', lastModifiedTime: new Date().toISOString() },
+    { id: 'conv-x', title: 'Test', status: 'CASCADE_RUN_STATUS_IDLE', lastModifiedTime: new Date().toISOString() },
   ]);
 
   const bridgeCalls = [];
@@ -594,15 +625,469 @@ test('catalog：parseAntigravityAcpLoad / parseAntigravityModels 与 antigravity
   assert.equal(antigravityModelSupportsEffort('gpt-oss-120b-medium'), false);
 });
 
+for (const receipt of ['收到', '丢失']) {
+test(`桌面桥回执${receipt}时均继续占用会话，越过观察时限直到宿主报告结束`, async (t) => {
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout'] });
+  const root = tmpDir();
+  const transcript = writeJsonl(root, 'transcript.jsonl', []);
+  const dbPath = path.join(root, 'antigravity', 'conversation_summaries.db');
+  createSummaryDb(dbPath, [{ id: 'c', status: 'CASCADE_RUN_STATUS_IDLE' }]);
+  let handle;
+  let settled = false;
+  const turn = runAntigravityTurn({
+    member: { agent: 'antigravity', providerId: 'c', file: transcript, cwd: root },
+    message: '继续工作', isNew: false, batonDir: root, geminiRoot: root, geminiConfigDir: root,
+    bridgeFinder: async () => ({}), run: async () => { throw new Error('只应走已注入的桌面桥'); },
+    onStart: (h) => { handle = h; },
+    bridgeCaller: async () => {
+      const active = new DatabaseSync(dbPath);
+      try { active.prepare('UPDATE conversation_summaries SET status = ?').run('CASCADE_RUN_STATUS_RUNNING'); }
+      finally { active.close(); }
+      fs.appendFileSync(transcript, JSON.stringify({ step_index: 0, type: 'USER_INPUT', content: '继续工作' }) + '\n');
+      if (receipt === '丢失') throw Object.assign(new Error('回执超时'), { deliveryUnknown: true });
+    },
+    pollMs: 10, maxTurnMs: 20,
+  }).then((res) => { settled = true; return res; });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(handle.canStop, false);
+  t.mock.timers.tick(100);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(settled, false);
+  fs.appendFileSync(transcript, JSON.stringify({ step_index: 1, type: 'PLANNER_RESPONSE', status: 'DONE', content: '完成' }) + '\n');
+  const db = new DatabaseSync(dbPath);
+  try { db.prepare('UPDATE conversation_summaries SET status = ?').run('CASCADE_RUN_STATUS_IDLE'); }
+  finally { db.close(); }
+  t.mock.timers.tick(60_000);
+  assert.equal((await turn).summary.status, 'ok');
+});
+}
+
+test('已签收续聊只跟随基线后的己方请求，前一轮 DONE、ERROR 与两轮间的空闲均不能结束它', async (t) => {
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout'] });
+  const root = tmpDir();
+  const file = writeJsonl(root, 'transcript.jsonl', [{ step_index: 0, type: 'USER_INPUT', content: '同一条消息' }]);
+  const dbFile = path.join(root, 'antigravity', 'conversation_summaries.db');
+  createSummaryDb(dbFile, [{ id: 'desktop', status: 'CASCADE_RUN_STATUS_RUNNING' }]);
+  const db = new DatabaseSync(dbFile);
+  t.after(() => db.close());
+  const append = (row) => fs.appendFileSync(file, JSON.stringify(row) + '\n');
+  const tick = async () => { t.mock.timers.tick(100); await new Promise((resolve) => setImmediate(resolve)); };
+  let settled = false;
+  const seen = [];
+  const turn = runAntigravityTurn({
+    member: { agent: 'antigravity', providerId: 'desktop', file, cwd: root }, message: '同一条消息',
+    batonDir: root, geminiRoot: root, geminiConfigDir: root, agyBin: null, pollMs: 10,
+    bridgeFinder: async () => ({}), bridgeCaller: async () => {
+      append({ step_index: 1, type: 'USER_INPUT', content: '电脑端的任务' });
+      append({ step_index: 2, type: 'PLANNER_RESPONSE', status: 'DONE', content: '前一轮', output_tokens: 37 });
+      append({ step_index: 3, type: 'ERROR_MESSAGE', content: '前一轮失败' });
+      return { ok: true };
+    },
+    onLine: (line) => seen.push(JSON.parse(line)),
+  }).then((r) => { settled = true; return r; });
+  await new Promise((resolve) => setImmediate(resolve));
+  db.prepare('UPDATE conversation_summaries SET status = ?').run('CASCADE_RUN_STATUS_IDLE');
+  await tick();
+  assert.equal(settled, false);
+  append({ step_index: 4, type: 'USER_INPUT', content: '<USER_REQUEST>\n同一条消息\n</USER_REQUEST>' });
+  await tick();
+  assert.equal(settled, false);
+  append({ step_index: 5, type: 'PLANNER_RESPONSE', status: 'DONE', content: '本轮', output_tokens: 8 });
+  await tick();
+  const { summary } = await turn;
+  assert.equal(summary.status, 'ok');
+  assert.equal(summary.tokens.output, 8);
+  assert.deepEqual(seen.filter((r) => r.step_index !== undefined).map((r) => r.step_index), [4, 5]);
+});
+
+test('桌面桥重启接管后只接受原回合的新消息与宿主终态', () => {
+  const root = tmpDir();
+  const file = writeJsonl(root, 'antigravity/brain/desktop/.system_generated/logs/transcript.jsonl', [
+    { step_index: 0, type: 'USER_INPUT', content: '核查进度' },
+    { step_index: 1, type: 'PLANNER_RESPONSE', status: 'DONE', content: '上一轮' },
+  ]);
+  const dbFile = path.join(root, 'antigravity', 'conversation_summaries.db');
+  createSummaryDb(dbFile, [{ id: 'desktop', status: 'CASCADE_RUN_STATUS_RUNNING' }]);
+  const turn = { key: 'k', turnId: 'recover-desktop', prompt: '核查进度', monitor: { conversationId: 'desktop', baselineStep: 1, sawRunning: true } };
+  const inspect = desktopRecovery({ getSession: () => ({ providerId: 'desktop', file }) }, { geminiRoot: root });
+  const beforeInput = new DatabaseSync(dbFile);
+  try { beforeInput.prepare('UPDATE conversation_summaries SET status = ?').run('CASCADE_RUN_STATUS_IDLE'); } finally { beforeInput.close(); }
+  assert.equal(inspect(turn), null);
+  const active = new DatabaseSync(dbFile);
+  try { active.prepare('UPDATE conversation_summaries SET status = ?').run('CASCADE_RUN_STATUS_RUNNING'); } finally { active.close(); }
+  fs.appendFileSync(file, JSON.stringify({ step_index: 2, type: 'USER_INPUT', content: '核查进度' }) + '\n');
+  fs.appendFileSync(file, JSON.stringify({ step_index: 3, type: 'PLANNER_RESPONSE', status: 'DONE', content: '新一轮' }) + '\n');
+  assert.equal(inspect(turn), null);
+  const db = new DatabaseSync(dbFile);
+  try { db.prepare('UPDATE conversation_summaries SET status = ?').run('CASCADE_RUN_STATUS_IDLE'); } finally { db.close(); }
+  assert.equal(inspect(turn).status, 'ok');
+});
+
+test('旧轮 RUNNING 期间写入本轮 USER_INPUT 和上一轮终态，首次 IDLE 保持占用，本轮只计自己的输出', async (t) => {
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout'] });
+  const root = tmpDir();
+  const file = writeJsonl(root, 'transcript.jsonl', []);
+  const dbFile = path.join(root, 'conversation_summaries.db');
+  createSummaryDb(dbFile, [{ id: 'desktop', status: 'CASCADE_RUN_STATUS_RUNNING' }]);
+  const db = new DatabaseSync(dbFile);
+  t.after(() => db.close());
+  const advance = async (status) => {
+    db.prepare('UPDATE conversation_summaries SET status = ?').run('CASCADE_RUN_STATUS_' + status);
+    t.mock.timers.tick(100);
+    await new Promise((resolve) => setImmediate(resolve));
+  };
+  let settled = false;
+  const seen = [];
+  const append = (row) => fs.appendFileSync(file, JSON.stringify(row) + '\n');
+  const turn = runAntigravityTurn({
+    member: { agent: 'antigravity', providerId: 'desktop', file, cwd: root }, message: '同一会话续聊',
+    agyBin: null, batonDir: root, geminiRoot: root, geminiConfigDir: root, pollMs: 10,
+    onLine: (line) => seen.push(JSON.parse(line)),
+    bridgeFinder: async () => ({}), bridgeCaller: async () => {
+      append({ step_index: 0, type: 'USER_INPUT', content: '同一会话续聊' });
+      append({ step_index: 1, type: 'PLANNER_RESPONSE', status: 'DONE', content: '旧输出', output_tokens: 37 });
+      append({ step_index: 2, type: 'ERROR_MESSAGE', content: '旧错误' });
+      return { ok: true };
+    },
+  }).then((r) => { settled = true; return r; });
+  await new Promise((resolve) => setImmediate(resolve));
+  await advance('IDLE');
+  assert.equal(settled, false);
+  await advance('RUNNING');
+  append({ step_index: 3, type: 'PLANNER_RESPONSE', status: 'DONE', content: '新输出', output_tokens: 7 });
+  await advance('IDLE');
+  const { summary } = await turn;
+  assert.equal(summary.status, 'ok');
+  assert.equal(summary.tokens.output, 7);
+  assert.deepEqual(seen.filter((r) => r.step_index !== undefined).map((r) => r.step_index), [0, 3]);
+});
+
+test('停机期间两轮交错，当前 RUNNING 或 IDLE、之前等待 IDLE 或 RUNNING 均如实标记待确认', () => {
+  const root = tmpDir();
+  const file = writeJsonl(root, 'brain/desktop/.system_generated/logs/transcript.jsonl', [
+    { step_index: 0, type: 'USER_INPUT', content: '核查' },
+    { step_index: 1, type: 'PLANNER_RESPONSE', status: 'DONE', content: '旧输出', output_tokens: 37 },
+    { step_index: 2, type: 'ERROR_MESSAGE', content: '旧错误' },
+  ]);
+  const dbFile = path.join(root, 'conversation_summaries.db');
+  createSummaryDb(dbFile, [{ id: 'desktop', status: 'CASCADE_RUN_STATUS_RUNNING' }]);
+  const db = new DatabaseSync(dbFile);
+  const set = (status) => db.prepare('UPDATE conversation_summaries SET status = ?').run('CASCADE_RUN_STATUS_' + status);
+  const append = (row) => fs.appendFileSync(file, JSON.stringify(row) + '\n');
+  const repo = { getSession: () => ({ providerId: 'desktop', file }) };
+  try {
+    set('IDLE');
+    append({ step_index: 3, type: 'ERROR_MESSAGE', content: '迟到的上一轮错误' });
+    set('RUNNING');
+    for (const current of ['RUNNING', 'IDLE']) {
+      if (current === 'IDLE') {
+        append({ step_index: 4, type: 'PLANNER_RESPONSE', status: 'DONE', content: '停机时已有新输出', output_tokens: 7 });
+        set('IDLE');
+      }
+      for (const awaitingIdle of [true, false]) {
+        const turn = { key: 'k', turnId: randomUUID(), prompt: '核查', monitor: {
+          conversationId: 'desktop', directory: '', baselineStep: -1, userStep: 0,
+          awaitingIdle, awaitingRun: !awaitingIdle, ignoreThrough: 2,
+        } };
+        const result = desktopRecovery(repo, { geminiRoot: root })(turn);
+        assert.equal(result.status, 'unconfirmed');
+        assert.match(result.error, /结果待确认/);
+        assert.equal(result.tokens, null);
+        assert.equal(result.eventCount, 0);
+      }
+    }
+  } finally { db.close(); }
+});
+
+test('新建回执按可信 cwd 和唯一首轮归属认领，含同项目子目录、并发回执及恢复后的最终归属检查', () => {
+  const root = tmpDir();
+  const work = path.join(root, 'work');
+  const other = path.join(root, 'other');
+  for (const dir of [work, other]) fs.mkdirSync(dir);
+  const geminiRoot = path.join(root, 'host');
+  const db = path.join(geminiRoot, 'antigravity', 'conversation_summaries.db');
+  const text = '同一条首轮消息';
+  function publish(id, cwd, projectId) {
+    createSummaryDb(db, [{ id, workspaceUris: JSON.stringify([cwd]), projectId }]);
+    writeJsonl(path.join(geminiRoot, 'antigravity'), `brain/${id}/.system_generated/logs/transcript.jsonl`, [{ step_index: 0, type: 'USER_INPUT', content: text }]);
+  }
+  publish('wrong-dir', other, 'shared');
+  publish('no-project', other, '');
+  const evidence = { cwd: work, projectId: 'shared', claimedId: null, baseline: [], delivery: 'unknown' };
+  const observing = createdConversationObserver(evidence, text, geminiRoot);
+  assert.equal(observing().match, null);
+  assert.equal(createdConversationObserver({ ...evidence, projectId: null }, text, geminiRoot)().match, null);
+  publish('right-dir', work, 'shared');
+  assert.equal(observing().match.id, 'right-dir');
+  const first = saveCreation({ turnId: randomUUID(), principalId: 'owner', ownerId: randomUUID(), status: 'unconfirmed', prompt: text, startedAt: Date.now(), cwd: work, evidence }, root);
+  const second = saveCreation({ ...first, turnId: randomUUID() }, root);
+  const observe = (receipt) => createdConversationObserver(receipt.evidence, text, geminiRoot, (match) => mayClaimCreation(receipt, match, root))().match;
+  assert.equal(observe(first), null);
+  assert.equal(observe(second), null);
+  let resolvedCwd = other;
+  const turns = [];
+  const repo = { getSession: (key) => ({ key, cwd: resolvedCwd }) };
+  const recover = () => unboundCreationRecovery(repo, { dir: root, geminiRoot, onBound: (record) => turns.push(record) })();
+  assert.equal(recover(), 2);
+  const signed = saveCreation({ ...first, evidence: { ...evidence, claimedId: 'right-dir', delivery: 'accepted' } }, root);
+  assert.equal(observe(signed).id, 'right-dir');
+  assert.equal(observe(second), null);
+  assert.equal(recover(), 2, '写入轮次前重新确认成员的可信目录');
+  const reserved = reserveCreation(signed, observe(signed), root);
+  assert.equal(reserved.reservation.sessionId, 'right-dir');
+  const secondClaim = saveCreation({ ...second, evidence: { ...evidence, claimedId: 'right-dir' } }, root);
+  writeJsonl(path.join(geminiRoot, 'antigravity'), 'brain/right-dir/.system_generated/logs/transcript_full.jsonl',
+    [{ step_index: 0, type: 'USER_INPUT', content: text }]);
+  assert.equal(observe(secondClaim), null, '确认落盘中途退出且宿主换用完整日志时，仍由同一回执持有身份');
+  resolvedCwd = work;
+  assert.equal(recover(), 1);
+  assert.deepEqual(turns.map((turn) => turn.turnId), [first.turnId]);
+  assert.equal(readCreation(second.turnId, root).status, 'unconfirmed');
+  assert.equal(recover(), 1, '已归属的宿主身份不能再分给另一张回执');
+});
+
+test('转录缺失、空文件或尚未写完第一行时，冷恢复尊重已保存的交错状态，即使尚无 userStep', () => {
+  const root = tmpDir();
+  for (const [n, data] of [null, '', '{"type":'].entries()) {
+    for (const phase of ['awaitingIdle', 'awaitingRun']) {
+      const file = path.join(root, n + phase + '.jsonl');
+      if (data !== null) fs.writeFileSync(file, data);
+      const turn = { key: 'k', turnId: randomUUID(), prompt: '待确认', monitor: {
+        conversationId: 'desktop', baselineStep: -1, userStep: null, [phase]: true,
+      } };
+      const inspect = desktopRecovery({ getSession: () => ({ file }) }, { geminiRoot: root });
+      assert.equal(inspect(turn).status, 'unconfirmed');
+      fs.writeFileSync(file, [
+        JSON.stringify({ step_index: 0, type: 'USER_INPUT', content: turn.prompt }),
+        JSON.stringify({ step_index: 1, type: 'ERROR_MESSAGE', content: '上一轮的错误' }),
+      ].join('\n') + '\n');
+      const again = inspect(turn);
+      assert.equal(again.status, 'unconfirmed');
+      assert.doesNotMatch(again.error, /上一轮的错误/);
+    }
+  }
+});
+
+test('旧已确认回执从紧凑日志 key 还原稳定的产品目录，同宿主完整日志可查询且不能重复领用', () => {
+  const dir = tmpDir();
+  for (const directory of ['', 'antigravity']) {
+    const id = directory ? 'nested' : 'top';
+    const prefix = (directory ? directory + '/' : '') + 'brain/' + id + '/.system_generated/logs/';
+    const key = encodeKey('antigravity', prefix + 'transcript.jsonl');
+    const full = encodeKey('antigravity', prefix + 'transcript_full.jsonl');
+    const old = saveCreation({ turnId: randomUUID(), status: 'identified', sessionId: id, key, cwd: dir }, dir);
+    const next = { turnId: randomUUID(), status: 'unconfirmed', cwd: dir, prompt: '普通测试', evidence: { cwd: dir, baseline: [] } };
+    const match = { id, directory, cwd: dir, key: full };
+    assert.equal(mayClaimCreation(next, match, dir), false);
+    assert.equal(boundCreationKey(old, { getSession: (candidate) => candidate === full ? { cwd: dir } : null }, dir), full);
+    const alternate = directory ? '' : 'antigravity';
+    assert.equal(mayClaimCreation(next, { ...match, directory: alternate }, dir), true);
+  }
+});
+
+test('首轮落盘与回执确认之间重启，完整转录接续已预留或已写下的紧凑日志轮次', () => {
+  for (const scenario of ['legacy-written', 'pinned-written', 'pinned-before-write']) {
+    const dir = tmpDir();
+    const geminiRoot = path.join(dir, 'host');
+    const directory = scenario === 'legacy-written' ? '' : 'antigravity';
+    const product = path.join(geminiRoot, directory);
+    const id = 'from-desktop', prompt = '只发一次';
+    const base = (directory ? directory + '/' : '') + 'brain/' + id + '/.system_generated/logs/';
+    const compactKey = encodeKey('antigravity', base + 'transcript.jsonl');
+    const fullKey = encodeKey('antigravity', base + 'transcript_full.jsonl');
+    const ownerId = randomUUID(), turnId = randomUUID();
+    let receipt = saveCreation({ turnId, ownerId, startedAt: Date.now(), principalId: 'owner', status: 'unconfirmed',
+      cwd: dir, prompt, model: 'desktop-model', effort: 'high', evidence: { baseline: [], cwd: dir, claimedId: id } }, dir);
+    if (scenario === 'legacy-written') {
+      receipt = saveCreation({ ...receipt, reservation: { directory, sessionId: id } }, dir);
+    } else {
+      receipt = reserveCreation(receipt, { directory, id, key: compactKey, cwd: dir }, dir);
+      assert.equal(readCreation(turnId, dir).reservation.key, compactKey);
+    }
+    const hadTurn = scenario !== 'pinned-before-write';
+    const checkpoint = { conversationId: id, directory, baselineStep: -1, userStep: 0, sawRunning: true, awaitingIdle: false };
+    if (hadTurn) startTurn({ key: compactKey, turnId, agent: 'antigravity', prompt, adoptedDesktop: { ownerId, monitor: checkpoint } }, { dir });
+    // Only the full transcript exists on the next startup. It still belongs to the same host session.
+    const full = writeJsonl(geminiRoot, base + 'transcript_full.jsonl', [
+      { step_index: 0, type: 'USER_INPUT', content: prompt },
+      { step_index: 1, type: 'PLANNER_RESPONSE', status: 'DONE', content: '完成', output_tokens: 6 },
+    ]);
+    createSummaryDb(path.join(product, 'conversation_summaries.db'), [{ id, workspaceUris: JSON.stringify([dir]) }]);
+    const repo = { getSession: (key) => key === fullKey ? { key, cwd: dir, file: full, providerId: id } : null };
+    const retained = [];
+    const recover = unboundCreationRecovery(repo, { dir, geminiRoot, onBound: (turn) => retained.push(turn) });
+    assert.equal(recover(), 0);
+    assert.deepEqual(retained.map((turn) => [turn.key, turn.turnId]), [[compactKey, turnId]]);
+    if (hadTurn) assert.deepEqual(retained[0].monitor, checkpoint);
+    assert.equal(readCreation(turnId, dir).key, compactKey);
+    assert.equal(boundCreationKey(readCreation(turnId, dir), repo, dir), fullKey);
+    assert.equal(getModel(compactKey, { dir }), 'desktop-model');
+    assert.equal(getEffort(compactKey, { dir }), 'high');
+    assert.equal(getModel(fullKey, { dir }), null);
+    assert.equal(getEffort(fullKey, { dir }), null);
+    const finished = recoverTurn(retained[0], { dir, inspectMonitor: desktopRecovery(repo, { geminiRoot }) });
+    assert.equal(finished.status, 'ok');
+    assert.equal(finished.tokens.output, 6);
+    assert.deepEqual(listTurns(compactKey, { dir }).map((turn) => [turn.turnId, turn.status]), [[turnId, 'ok']]);
+    assert.deepEqual(listTurns(fullKey, { dir }), []);
+    assert.equal(recover(), 0);
+    assert.equal(retained.length, 1);
+  }
+});
+
+test('旧工作目录回执能认出系统临时目录和 Windows 短路径，且拒绝可改指的目录链接', () => {
+  const root = tmpDir();
+  const spelling = path.join(os.tmpdir(), path.basename(root));
+  const real = fs.realpathSync.native(root);
+  assert.equal(sameDesktopWorkspace(spelling, real), true);
+  const child = path.join(real, 'Receipt Workspace');
+  fs.mkdirSync(child);
+  if (process.platform === 'win32') {
+    const short = path.join(real, 'RECEIP~1');
+    if (fs.existsSync(short)) assert.equal(sameDesktopWorkspace(short, child), true);
+  }
+  const alias = path.join(real, 'alias');
+  fs.symlinkSync(child, alias, process.platform === 'win32' ? 'junction' : 'dir');
+  assert.equal(sameDesktopWorkspace(alias, child), false);
+});
+
+test('新建之前固定真实工作目录身份，区分同名换目录和敏感大小写，允许指向同一目录的别名', (t) => {
+  const root = tmpDir(), upper = path.join(root, 'Work'), lower = path.join(root, 'work');
+  if (process.platform === 'win32' && process.env.SystemRoot) {
+    // This only affects the test's empty temporary directory. Standard users on some
+    // Windows installations cannot enable the per-directory NTFS flag.
+    spawnSync(path.join(process.env.SystemRoot, 'System32', 'fsutil.exe'), ['file', 'setCaseSensitiveInfo', root, 'enable'],
+      { stdio: 'ignore', windowsHide: true, timeout: 2000 });
+  }
+  fs.mkdirSync(upper);
+  const identity = desktopWorkspaceIdentity(upper);
+  assert.ok(identity);
+  let sensitive = true;
+  try { fs.mkdirSync(lower); } catch (err) { if (err.code !== 'EEXIST') throw err; sensitive = false; }
+  assert.equal(sameDesktopWorkspace(upper, lower, identity), !sensitive);
+  t.diagnostic(sensitive ? '本机将 Work 和 work 视为两个物理目录' : '本机将大小写别名指向同一目录，另以固定文件身份验证区分');
+  assert.equal(sameDesktopWorkspace(upper, upper, { path: path.join(path.dirname(identity.path), 'wORK') }), false);
+  if (identity.ino) assert.equal(sameDesktopWorkspace(upper, upper, { ...identity, ino: String(BigInt(identity.ino) + 1n) }), false);
+  assert.equal(sameDesktopWorkspace(upper, path.join(root, 'missing'), identity), false);
+  assert.equal(sameDesktopWorkspace(path.join(root, 'missing'), path.join(root, 'missing')), false);
+  const alias = path.join(root, 'alias');
+  fs.symlinkSync(upper, alias, process.platform === 'win32' ? 'junction' : 'dir');
+  assert.equal(sameDesktopWorkspace(alias, upper, identity), true);
+  const old = path.join(root, 'original');
+  fs.renameSync(upper, old);
+  fs.mkdirSync(upper);
+  if (identity.ino) {
+    assert.equal(sameDesktopWorkspace(upper, alias, identity), false);
+    assert.equal(sameDesktopWorkspace(old, old, identity), true);
+    const receipt = { turnId: randomUUID(), cwd: upper, prompt: '固定初始目录', evidence: { cwd: upper, workspace: identity, baseline: [] } };
+    assert.equal(mayClaimCreation(receipt, { id: 'candidate', directory: '', cwd: alias, key: 'candidate' }, root), false);
+  }
+});
+
+test('桌面桥新会话稍后才落盘时仅跟随与首条消息相符的会话', async (t) => {
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout'] });
+  const root = tmpDir();
+  const db = path.join(root, 'antigravity', 'conversation_summaries.db');
+  createSummaryDb(db, []);
+  const recordConversation = (id, text) => {
+    createSummaryDb(db, [{ id, workspaceUris: JSON.stringify([root]) }]);
+    writeJsonl(root, `antigravity/brain/${id}/.system_generated/logs/transcript.jsonl`, [
+      { step_index: 0, type: 'USER_INPUT', content: text },
+      { step_index: 1, type: 'PLANNER_RESPONSE', status: 'DONE', content: '完成' },
+    ]);
+  };
+  let settled = false;
+  const turn = runAntigravityTurn({
+    isNew: true, member: { agent: 'antigravity', cwd: root }, message: '核对工作',
+    batonDir: root, geminiRoot: root, geminiConfigDir: root,
+    bridgeFinder: async () => ({}), bridgeCaller: async () => ({}),
+    pollMs: 10, startTimeoutMs: 20,
+  }).then((res) => { settled = true; return res; });
+  await new Promise((resolve) => setImmediate(resolve));
+  recordConversation('other', '另一项工作的消息');
+  t.mock.timers.tick(100);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(settled, false, '等待身份确认时要继续监控');
+  recordConversation('ours', '核对工作');
+  t.mock.timers.tick(60_000);
+  const { summary } = await turn;
+  assert.equal(summary.status, 'ok');
+  assert.equal(summary.sessionId, 'ours');
+});
+
+test('两种桌面布局同时有同一 ID 时，续聊使用成员自己的日志与 SQLite 行', async (t) => {
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout'] });
+  const root = tmpDir();
+  const rel = 'brain/desktop/.system_generated/logs/transcript.jsonl';
+  const files = ['', 'antigravity'].map((dir) => writeJsonl(path.join(root, dir), rel, [
+    { step_index: 0, type: 'USER_INPUT', content: '往事' },
+  ]));
+  const db = path.join(root, 'conversation_summaries.db');
+  createSummaryDb(db, [{ id: 'desktop', status: 'CASCADE_RUN_STATUS_IDLE' }]);
+  createSummaryDb(path.join(root, 'antigravity', 'conversation_summaries.db'), [{ id: 'desktop', killed: 1 }]);
+  let settled = false;
+  const turn = runAntigravityTurn({
+    member: { agent: 'antigravity', providerId: 'desktop', file: files[0], cwd: root },
+    message: '核对', agyBin: null, batonDir: root, geminiRoot: root, geminiConfigDir: root, pollMs: 10,
+    bridgeFinder: async () => ({}), bridgeCaller: async () => {
+      const direct = new DatabaseSync(db);
+      try { direct.prepare('UPDATE conversation_summaries SET status = ?').run('CASCADE_RUN_STATUS_RUNNING'); } finally { direct.close(); }
+      for (const [i, file] of files.entries()) {
+        fs.appendFileSync(file, JSON.stringify({ step_index: 1, type: 'USER_INPUT', content: '核对' }) + '\n');
+        fs.appendFileSync(file, JSON.stringify({ step_index: 2, type: 'PLANNER_RESPONSE', status: 'DONE', content: '完成', output_tokens: 5 + i }) + '\n');
+      }
+      return { ok: true };
+    },
+  }).then((r) => { settled = true; return r; });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(settled, false);
+  const direct = new DatabaseSync(db);
+  try { direct.prepare('UPDATE conversation_summaries SET status = ?').run('CASCADE_RUN_STATUS_IDLE'); } finally { direct.close(); }
+  t.mock.timers.tick(100);
+  const { summary } = await turn;
+  assert.equal(summary.status, 'ok');
+  assert.equal(summary.tokens.output, 5);
+});
+
+test('新建桌面会话从两种布局识别新登记的 ID，根库新会话与嵌套库旧同名会话分开', async (t) => {
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout'] });
+  const root = tmpDir();
+  const nested = path.join(root, 'antigravity');
+  const rel = 'brain/reused/.system_generated/logs/transcript.jsonl';
+  const rows = (tokens) => [
+    { step_index: 0, type: 'USER_INPUT', content: '新建任务' },
+    { step_index: 1, type: 'PLANNER_RESPONSE', status: 'DONE', content: '完成', output_tokens: tokens },
+  ];
+  createSummaryDb(path.join(nested, 'conversation_summaries.db'), [{ id: 'reused' }]);
+  writeJsonl(nested, rel, rows(99));
+  createSummaryDb(path.join(root, 'conversation_summaries.db'), []);
+  let result;
+  const turn = runAntigravityTurn({
+    isNew: true, member: { agent: 'antigravity', cwd: root }, message: '新建任务',
+    agyBin: null, batonDir: root, geminiRoot: root, geminiConfigDir: root,
+    bridgeFinder: async () => ({}), bridgeCaller: async () => {
+      createSummaryDb(path.join(root, 'conversation_summaries.db'), [{ id: 'reused', workspaceUris: JSON.stringify([root]) }]);
+      writeJsonl(root, rel, rows(7));
+      return { ok: true };
+    },
+    pollMs: 10,
+  }).then((r) => { result = r; });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(result?.summary?.tokens?.output, 7);
+  await turn;
+});
+
 test('runAntigravityAcpTurn：ACP JSON-RPC 流程、切档切模型以及 session/cancel 中止', async () => {
   const seenRpcs = [];
+  const killSent = Promise.withResolvers();
   const makeMockSpawn = ({ hangPrompt = false } = {}) => (_cmd, _args) => {
     const child = new EventEmitter();
     child.stdin = new PassThrough();
     child.stdout = new PassThrough();
     child.stderr = new PassThrough();
     child.kill = () => {
-      process.nextTick(() => child.emit('close', 0));
+      if (hangPrompt) killSent.resolve(() => child.emit('close', 0));
+      else process.nextTick(() => child.emit('close', 0));
     };
 
     let inBuf = '';
@@ -639,13 +1124,13 @@ test('runAntigravityAcpTurn：ACP JSON-RPC 流程、切档切模型以及 sessio
   };
 
   const res = await runAntigravityAcpTurn({
-    member: { agent: 'antigravity', providerId: 'sess-desktop-1', cwd: 'C:\\repo' },
+    member: { agent: 'antigravity', providerId: 'sess-desktop-1', cwd: tmpDir() },
     message: '你好',
     model: 'gemini-4-carbon',
     effort: 'high',
     permissionMode: 'plan',
     product: 'antigravity',
-    agyBin: 'mock-agy',
+    agyBin: process.execPath,
     spawnFn: makeMockSpawn(),
   });
   assert.equal(res.code, 0);
@@ -663,9 +1148,9 @@ test('runAntigravityAcpTurn：ACP JSON-RPC 流程、切档切模型以及 sessio
   seenRpcs.length = 0;
   let stopper = null;
   const abortedPromise = runAntigravityAcpTurn({
-    member: { agent: 'antigravity', providerId: 'sess-desktop-2', cwd: 'C:\\repo' },
+    member: { agent: 'antigravity', providerId: 'sess-desktop-2', cwd: tmpDir() },
     message: '卡住',
-    agyBin: 'mock-agy',
+    agyBin: process.execPath,
     spawnFn: makeMockSpawn({ hangPrompt: true }),
     onStart: (h) => { stopper = h; },
     onLine: (line) => {
@@ -674,6 +1159,12 @@ test('runAntigravityAcpTurn：ACP JSON-RPC 流程、切档切模型以及 sessio
       }
     },
   });
+  let settled = false;
+  abortedPromise.then(() => { settled = true; });
+  const close = await killSent.promise;
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(settled, false, '仅发出 kill 时不能释放执行句柄');
+  close();
   const aborted = await abortedPromise;
   assert.equal(aborted.summary.status, 'aborted');
   assert.ok(seenRpcs.some((r) => r.method === 'session/cancel' && r.params.sessionId === 'sess-desktop-2'));

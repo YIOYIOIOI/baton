@@ -9,6 +9,11 @@
  * 不索取就拿不到，HttpOnly 对这条路径才仍然作数。
  */
 
+import { getBrowserLock } from '../../app/src/store/browserSession';
+import { isSendAccepted } from '../../app/src/api/types';
+import { t } from './i18n';
+import type { CreationStatus } from '../../app/src/api/creationStatus';
+
 /** 后端的统一错误体：`{ error: { code, message, fix } }`。`fix` 是给人看的下一步。 */
 export class ApiError extends Error {
   readonly status: number;
@@ -26,6 +31,7 @@ export class ApiError extends Error {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  if (getBrowserLock() && path !== '/api/pair') throw new ApiError(401, 'locked', 'HTTP 401', '');
   let res: Response;
   try {
     res = await fetch(path, {
@@ -41,6 +47,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   if (res.status === 204) return undefined as T;
 
   const body = await res.json().catch(() => null);
+  if (getBrowserLock() && path !== '/api/pair') throw new ApiError(401, 'locked', 'HTTP 401', '');
 
   if (!res.ok) {
     if (res.status === 401 && !path.startsWith('/api/pair') && typeof window !== 'undefined') {
@@ -68,16 +75,10 @@ export const CODE_LENGTH = 12;
 export const api = {
   /** 配对。成功后服务端下发 HttpOnly cookie，之后的请求自动带上。 */
   pair: (code: string) =>
-    request<{ ok: true }>('/api/pair', {
+    request<{ ok: true; deviceId?: string }>('/api/pair', {
       method: 'POST',
       body: JSON.stringify({ code }),
     }),
-
-  /**
-   * 解除配对。**必须走服务端**：浏览器里真正起作用的是 HttpOnly cookie，
-   * 只清本地存储的话看着像退出了，一刷新又自动登回去。
-   */
-  unpair: () => request<{ ok: true }>('/api/unpair', { method: 'POST' }),
 
   sessions: () => request<SessionList>('/api/sessions'),
 
@@ -154,15 +155,26 @@ export const api = {
    * 送信。后端要求 config.allowSend === true，否则 403 send_disabled。
    * `when`：'auto' 正在跑就排队；'interrupt' 插队——停下正在跑的这一轮，这条第一个发（handlers/turns.js）
    */
-  send: (key: string, message: string, fork = false, when: 'auto' | 'interrupt' = 'auto') =>
-    request<unknown>(`/api/sessions/${enc(key)}/send`, {
+  send: async (key: string, message: string, fork: boolean, when: 'auto' | 'interrupt', requestId: string) => {
+    const receipt = await request<{ queued: boolean; turnId?: string; queueId?: string } | null>(`/api/sessions/${enc(key)}/send`, {
       method: 'POST',
-      body: JSON.stringify({ message, fork, when }),
-    }),
+      body: JSON.stringify({ message, fork, when, requestId }),
+    });
+    if (!receipt || !isSendAccepted(receipt)) {
+      throw new ApiError(0, 'send_unconfirmed', t('conv.sendUnconfirmed'), t('conv.retryUnconfirmed'));
+    }
+    return receipt;
+  },
 
   /** 撤回排着还没发出去的那一条。已经发出去了会回 404，如实说 */
   cancelQueued: (key: string, id: string) =>
     request<{ cancelled: true; id: string; text: string }>(`/api/sessions/${enc(key)}/queue/cancel`, {
+      method: 'POST',
+      body: JSON.stringify({ id }),
+    }),
+
+  promoteQueued: (key: string, id: string) =>
+    request<{ queued: boolean; queueId: string; turnId?: string }>(`/api/sessions/${enc(key)}/queue/promote`, {
       method: 'POST',
       body: JSON.stringify({ id }),
     }),
@@ -215,8 +227,8 @@ export const api = {
    * 传上去的文件读回来的地址，**给 `<img src>` 用**。
    *
    * 和 `fileUrl` 是两条：那条是文件浏览器的下载口，带
-   * `Content-Disposition: attachment`；这条是上传的读回口，带
-   * `Cache-Control: immutable`，正合缩略图。
+   * `Content-Disposition: attachment`；这条返回可展示的上传文件。
+   * 缩略图每次向服务端重新鉴权。
    *
    * 网页端凭据走 HttpOnly cookie，同源请求浏览器自己带上，所以直接丢进
    * `src` 就行——不像手机端要拿 Bearer 头、得先 fetch 成 blob。
@@ -247,7 +259,7 @@ export const api = {
     }),
 
   stop: (key: string, turnId: string) =>
-    request<unknown>(`/api/sessions/${enc(key)}/stop`, {
+    request<{ stopped: boolean; stopping?: boolean; note?: string }>(`/api/sessions/${enc(key)}/stop`, {
       method: 'POST',
       body: JSON.stringify({ turnId }),
     }),
@@ -291,6 +303,7 @@ export const api = {
    * `effort` 后端一直收（routes.js 把 `body.effort` 传给 createSession），
    * 只是这里原来没写进类型，于是新建时选的强度悄悄丢掉了。
    */
+  creationStatus: (url: string, signal: AbortSignal) => request<CreationStatus>(url, { signal }),
   createSession: (input: {
     agent: Agent; cwd: string; message: string;
     model?: string | null; effort?: string | null;
@@ -313,7 +326,7 @@ export const api = {
     }),
 
   /** SSE。浏览器原生 EventSource 够用——同源、cookie 自动带上、断线自动重连。 */
-  stream: (key: string) => new EventSource(`/api/sessions/${enc(key)}/stream`),
+  stream: (key: string, from: number) => new EventSource(`/api/sessions/${enc(key)}/stream?from=${from}`),
 };
 
 const enc = encodeURIComponent;
@@ -385,7 +398,7 @@ export type Ev =
   /** /goal 的进度。text 是目标条件；met = 达成了，否则是检查没过、agent 被打回去接着干 */
   | (Base & { kind: 'goal'; text: string; goal: { met: boolean; reason: string | null; status?: string } });
 
-export type EventPage = { events: Ev[]; nextBefore: number | null };
+export type EventPage = { events: Ev[]; nextBefore: number | null; endOffset: number };
 
 /** 全文的一段。实测单条能到 17 万字，所以一定要分段，不能整块塞进 DOM。 */
 export type FullChunk = {
@@ -397,7 +410,7 @@ export type FullChunk = {
   hasMore: boolean;
 };
 
-export type Turn = { turnId: string; status: 'running' | string; startedAt: number };
+export type Turn = { turnId: string; status: 'running' | string; startedAt: number; canStop?: boolean; stopReason?: string };
 
 export type SessionState = {
   running: boolean;
@@ -438,7 +451,7 @@ export type PendingAsk = {
 };
 
 /** SSE 心跳。既防 Cloudflare 524，又是秒表的活性证明——连着两拍没来就该冻结。 */
-export type Tick = { turnId: string | null; running: boolean; elapsedMs: number; queued: number };
+export type Tick = { turnId: string | null; running: boolean; elapsedMs: number; queued: number; canStop?: boolean; stopping?: boolean };
 
 /**
  * 一个可选模型。形状**实测自 `/api/models`**——旧的类型只写了 `{id, seen}`，
@@ -648,19 +661,14 @@ export type SessionList = {
   cwds: string[];
 };
 
-/**
- * 建会话的返回。**没有 `key`**——这里原来写的是 `{ key: string }`，纯属想当然，
- * 于是建完会跳到 `/session/undefined`（实测）。网页端从此没成功建过一次会话，
- * 设计文档 §5b 那句「送信的成功路径没有验过」说的就是它。
- *
- * 服务端给的是 `sessionId`，也就是 provider 那边的 id（claude 的 cliSessionId /
- * codex 的 threadId）。而 Baton 的 `key` 是由**文件相对路径**编码来的，建之前
- * 拿不到——服务端自己也要在建完之后重扫一遍仓库、按 `providerId` 找回它
- * （见 api.js 里 `landed` 那段）。客户端只能照做。
- */
+/** 已落地的会话带 key。桌面端的新建请求可能先返回只读状态查询地址。 */
 export type Created = {
   /** provider 的会话 id。拿它去 `/api/sessions` 里按 `providerId` 反查 `key` */
-  sessionId: string;
+  sessionId: string | null;
+  key?: string | null;
+  turnId?: string;
+  status?: 'unconfirmed';
+  statusUrl?: string;
   agent: Agent;
   /** 归一化之后的工作目录，不一定与请求里的原文逐字相同 */
   cwd: string;
@@ -698,10 +706,11 @@ export type DirPage = {
 
 export type Health = {
   ok?: boolean;
+  deviceId?: string | null;
   version?: string;
   allowSend: boolean;
   canSetPermissionMode?: boolean;
-  principal?: { id: string; isOwner: boolean };
+  principal?: { id: string; isOwner: boolean; generation?: string };
 };
 
 export type DeviceItem = {

@@ -1,10 +1,31 @@
 import {
-  draftAttachments, draftText, setDraftAttachments, setDraftText, NEW_SESSION_DRAFT,
+  draftAttachments, draftText, setDraftAttachments, setDraftText, NEW_SESSION_DRAFT, selectDraftIdentity, resetDraftIdentity,
 } from '../drafts';
 import type { Attachment } from '../attach';
 
 const file = (relative: string): Attachment => ({
   name: relative, bytes: 1, relative, previewUri: null, isImage: false,
+});
+
+beforeEach(async () => { await selectDraftIdentity('https://one.example.test', 'reader-a'); });
+afterEach(async () => { await resetDraftIdentity(true); });
+
+test('same session on another computer or account has separate text and attachments; unpair clears the active scope', async () => {
+  setDraftText('same', 'private draft');
+  setDraftAttachments('same', [file('one.png')]);
+  await selectDraftIdentity('https://one.example.test', 'reader-b');
+  expect(draftText('same')).toBe('');
+  expect(draftAttachments('same')).toEqual([]);
+  setDraftText('same', 'second account');
+  await selectDraftIdentity('https://one.example.test', 'reader-b', 'assignment-two');
+  expect(draftText('same')).toBe('');
+  setDraftText('same', 'reassigned account');
+  await selectDraftIdentity('https://two.example.test', 'reader-b');
+  expect(draftText('same')).toBe('');
+  setDraftText('same', 'second origin');
+  await resetDraftIdentity(true);
+  expect(draftText('same')).toBe('');
+  expect(draftAttachments('same')).toEqual([]);
 });
 
 /**

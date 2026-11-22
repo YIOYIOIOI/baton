@@ -19,7 +19,7 @@ import { useConnection } from '@/store/connection';
 import { downloadSessionFile } from '@/store/download';
 import {
   FLATTEN_CAP, SORT_LABEL, arrange, baseName, cachedListing, clearPick, crumbsOf, fetchListing, flattenPicked,
-  fmtSize, fmtTime, joinRel, kindOf, setSelecting, togglePick, useFilePick, type FileKind, type SortKey,
+  fmtSize, fmtTime, invalidListing, joinRel, kindOf, setSelecting, togglePick, useFileAccess, useFilePick, type FileKind, type SortKey,
 } from '@/store/files';
 import { BatonError } from '@/api/client';
 import type { FileEntry, FileListing } from '@/api/types';
@@ -55,8 +55,10 @@ const ROW_H = 60;
 export default function FilesScreen() {
   const t = useTheme();
   const hydrated = useHydrated();
+  const revision = useFileAccess((s) => s.revision);
+  const route = useLocalSearchParams<{ key: string; path?: string }>();
   if (!hydrated) return <View style={{ flex: 1, backgroundColor: t.c.bgTertiary }} />;
-  return <FilesBody />;
+  return <FilesBody key={JSON.stringify([revision, route.key, route.path])} />;
 }
 
 function FilesBody() {
@@ -100,6 +102,8 @@ function FilesBody() {
       setErr(null);
       setNow(Date.now());
     } catch (e) {
+      if (e instanceof Error && e.message === 'stale_listing') return;
+      if (invalidListing(e)) setData(null);
       setErr(e instanceof BatonError ? `${e.message}${e.fix ? `　${e.fix}` : ''}` : (e as Error).message);
     } finally {
       setBusy(false);

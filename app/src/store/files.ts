@@ -134,6 +134,18 @@ export function arrange(entries: FileEntry[], sort: SortKey, filter: string): Fi
 // ── 列表缓存 ────────────────────────────────────
 
 const listings = new Map<string, FileListing>();
+const latestListing = new Map<string, symbol>();
+export const useFileAccess = create(() => ({ identity: null as string | null, revision: 0 }));
+export function setFileIdentity(identity: string | null) {
+  if (useFileAccess.getState().identity === identity) return;
+  listings.clear();
+  latestListing.clear();
+  clearPick();
+  useFileAccess.setState((s) => ({ identity, revision: s.revision + 1 }));
+}
+export function invalidListing(error: unknown) {
+  return [401, 403, 404].includes((error as { status?: number } | null)?.status ?? 0);
+}
 const cacheKey = (key: string, path: string) => `${key}\u0000${path}`;
 
 export function cachedListing(key: string, path: string): FileListing | null {
@@ -141,11 +153,26 @@ export function cachedListing(key: string, path: string): FileListing | null {
 }
 
 export async function fetchListing(client: Client, key: string, path: string): Promise<FileListing> {
-  const data = await client.files(key, path);
-  listings.set(cacheKey(key, path), data);
-  // 上限：一直翻不清的话，一个 node_modules 就能攒出几百份
-  if (listings.size > 200) listings.delete(listings.keys().next().value as string);
-  return data;
+  const access = useFileAccess.getState();
+  const id = cacheKey(key, path);
+  const request = Symbol();
+  latestListing.set(id, request);
+  try {
+    const data = await client.files(key, path);
+    if (useFileAccess.getState() !== access || latestListing.get(id) !== request) throw new Error('stale_listing');
+    if (access.identity) listings.set(id, data);
+    if (listings.size > 200) listings.delete(listings.keys().next().value as string);
+    return data;
+  } catch (error) {
+    if (useFileAccess.getState() === access && latestListing.get(id) === request && invalidListing(error)) {
+      for (const entry of listings.keys()) if (entry.startsWith(key + '\u0000')) listings.delete(entry);
+      for (const entry of latestListing.keys()) if (entry.startsWith(key + '\u0000')) latestListing.delete(entry);
+      clearPick();
+    }
+    throw error;
+  } finally {
+    if (latestListing.get(id) === request) latestListing.delete(id);
+  }
 }
 
 // ── 勾选 ────────────────────────────────────────

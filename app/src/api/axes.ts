@@ -20,6 +20,7 @@ const MAP: Record<Exclude<TurnStatus, 'running'>, RunAxis> = {
   failed: 'fail',
   aborted: 'stopped',
   anomaly: 'anomaly',
+  unconfirmed: 'unconfirmed',
   // 交给了 Codex App 排队：Baton 这边平稳收尾，不报警。说明由结束横幅（TurnEnd）给
   handoff: 'ok',
 };

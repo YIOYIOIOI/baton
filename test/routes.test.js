@@ -31,6 +31,7 @@ const NOT_REQUEST_HANDLERS = new Set([
   'resumeOffset',
   'MAX_REPLAY_BYTES',
   'visibleCwds',      // 列表的 cwds 字段与目录浏览起点的数据源
+  'sessionUploadDestination', 'cwdUploadDestination', // 上传前校验目标，随后由对应端点落盘
   'defaultRunner',    // agent 进程启动器
   'defaultRegistrar', // 注册项写入器
   'liveTurns',        // turnId -> kill 的内存表

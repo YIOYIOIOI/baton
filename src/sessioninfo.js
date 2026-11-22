@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { commandOf } from './claude.js';
 import {
-  cwdFromMetadata, extractGoalCommand, extractSettingsModel, normalizeToolArgs,
+  extractGoalCommand, extractSettingsModel, normalizeToolArgs,
 } from './antigravity.js';
 import { displayName } from './agent/catalog.js';
 
@@ -179,10 +179,6 @@ export function applyAntigravity(state, r) {
   if (!r || typeof r !== 'object') return;
   const ts = r.created_at ?? null;
   if (r.type === 'USER_INPUT') {
-    if (!state.cwd && typeof r.content === 'string') {
-      const c = cwdFromMetadata(r.content);
-      if (c) state.cwd = c;
-    }
     const m = extractSettingsModel(r.content);
     if (m) state.model = m;
     const goal = extractGoalCommand(r.content);
@@ -317,7 +313,7 @@ export function readSessionInfo(member, { windowOf = () => null } = {}) {
   }
   let hit = cache.get(member.file);
   // 文件变小了（被重写过）：从头来
-  if (!hit || st.size < hit.offset) {
+  if (!hit || st.size < hit.offset || (member.agent === 'antigravity' && hit.state.cwd !== (member.cwd ?? null))) {
     hit = { offset: 0, state: emptyState(), mtimeMs: 0 };
     if (member.cwd) hit.state.cwd = member.cwd;
   }

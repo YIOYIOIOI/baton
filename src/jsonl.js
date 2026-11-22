@@ -90,16 +90,18 @@ export function scanForward(file, predicate, capBytes = 4 * 1024 * 1024) {
 // trimPartialFirstLine：向后分页时 start 是任意位置，左边缘可能切断一行，必须丢掉首行。
 // 但 tail-follow 的 start 是上次推送结束的精确行边界，丢首行会把新追加的内容吃掉——
 // 那种调用方须显式传 false。
-export function readRangeWithOffsets(file, start, end, { trimPartialFirstLine = true } = {}) {
+export function readRangeWithOffsets(file, start, end, { trimPartialFirstLine = true, completeOnly = false } = {}) {
   const size = fs.statSync(file).size;
   const from = Math.max(0, start);
   const to = Math.min(end, size);
   const buf = readBytes(file, from, Math.max(0, to - from));
   const hitStart = from === 0;
+  const lastNewline = buf.lastIndexOf(0x0a);
+  const endOffset = lastNewline < 0 ? null : from + lastNewline + 1;
   let pos = 0;
   if (!hitStart && trimPartialFirstLine) {
     const nl = buf.indexOf(0x0a);
-    if (nl < 0) return { entries: [], hitStart };
+    if (nl < 0) return { entries: [], hitStart, endOffset };
     pos = nl + 1;
   }
   const entries = [];
@@ -107,7 +109,7 @@ export function readRangeWithOffsets(file, start, end, { trimPartialFirstLine = 
     const nl = buf.indexOf(0x0a, pos);
     if (nl < 0) {
       // Right edge cut before EOF: drop incomplete trailing fragment just like split/pop did.
-      if (to === size) {
+      if (!completeOnly && to === size) {
         const line = buf.subarray(pos).toString('utf8');
         if (line.trim()) entries.push({ line, offset: from + pos });
       }
@@ -117,7 +119,46 @@ export function readRangeWithOffsets(file, start, end, { trimPartialFirstLine = 
     if (line.trim()) entries.push({ line, offset: from + pos });
     pos = nl + 1;
   }
-  return { entries, hitStart };
+  return { entries, hitStart, endOffset };
+}
+
+// Return the last complete boundary, stopping at the caller's known lower bound.
+export async function previousLineEnd(file, end, floor = 0, cancelled = () => false) {
+  const handle = await fs.promises.open(file, 'r');
+  try {
+    const chunk = Buffer.allocUnsafe(Math.min(64 * 1024, end - floor));
+    for (let pos = end; pos > floor && !cancelled();) {
+      const length = Math.min(pos - floor, chunk.length);
+      pos -= length;
+      const { bytesRead } = await handle.read(chunk, 0, length, pos);
+      const lf = chunk.subarray(0, bytesRead).lastIndexOf(0x0a);
+      if (lf >= 0) return pos + lf + 1;
+    }
+    return floor;
+  } finally {
+    await handle.close();
+  }
+}
+
+// Read only the specified record. The byte cap also bounds an unterminated line.
+export function readLineAt(file, offset, maxBytes) {
+  const fd = fs.openSync(file, 'r');
+  try {
+    const parts = [];
+    let length = 0;
+    while (length < maxBytes) {
+      const chunk = Buffer.allocUnsafe(Math.min(64 * 1024, maxBytes - length));
+      const n = fs.readSync(fd, chunk, 0, chunk.length, offset + length);
+      const nl = chunk.subarray(0, n).indexOf(0x0a);
+      const part = chunk.subarray(0, nl < 0 ? n : nl);
+      parts.push(part);
+      length += part.length;
+      if (nl >= 0 || n === 0) return Buffer.concat(parts, length).toString('utf8');
+    }
+    return null;
+  } finally {
+    fs.closeSync(fd);
+  }
 }
 
 export function parseLines(lines) {

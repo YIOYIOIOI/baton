@@ -46,13 +46,14 @@ export function consumeIntent(intent, { dir = BATON_DIR } = {}) {
 
 // 守护进程启动时调用：停止意图指向的进程若已不在，该轮就判 aborted，
 // 否则它会以 running 状态永远挂着——那正是「永远 Thinking」的另一种成因。
-/** @param {{ dir?: string, isAlive: (turnId: string) => boolean, now?: number }} opts */
+/** @param {{ dir?: string, isAlive: (turnId: string, turn?: any) => boolean, now?: number }} opts */
 export function reconcileOrphans({ dir = BATON_DIR, isAlive, now = Date.now() }) {
   const fixed = [];
   for (const intent of pendingIntents({ dir })) {
     if (intent.type !== 'stop') continue;
-    if (isAlive(intent.turnId)) continue; // 活着就把意图留给它自己消费
-    const turn = listTurns(intent.key, { dir }).find((t) => t.turnId === intent.turnId);
+    let turn;
+    try { turn = listTurns(intent.key, { dir }).find((t) => t.turnId === intent.turnId); } catch { continue; }
+    if (isAlive(intent.turnId, turn)) continue;
     if (turn && turn.status === 'running') {
       fixed.push(endTurn({
         key: intent.key,

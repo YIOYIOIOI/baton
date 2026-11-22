@@ -1,8 +1,8 @@
 import {
   listSessions, getEvents, streamSession, sessionState, getEventFull,
 } from './handlers/sessions.js';
-import { sendMessage, stopTurn, cancelQueued } from './handlers/turns.js';
-import { createSession } from './handlers/create.js';
+import { sendMessage, stopTurn, cancelQueued, promoteQueued } from './handlers/turns.js';
+import { createSession, creationStatus } from './handlers/create.js';
 import {
   pushKey, pushSubscribeHandler, pushUnsubscribeHandler, pushLatest,
 } from './handlers/push.js';
@@ -10,7 +10,7 @@ import {
   listModels, setSessionModel, setSessionEffort, readPermission, writePermission,
 } from './handlers/settings.js';
 import {
-  uploadFile, uploadToCwd, downloadUpload, listSessionFiles, downloadSessionFile,
+  uploadFile, uploadToCwd, sessionUploadDestination, cwdUploadDestination, downloadUpload, listSessionFiles, downloadSessionFile,
 } from './handlers/files.js';
 import { errorBody } from './errors.js';
 import { browseDirs, makeDir } from './handlers/dirs.js';
@@ -50,6 +50,7 @@ function sessionSub(pathname, verb) {
  * @property {(pathname: string) => any} match 命中返回捕获（可能是 key），不命中返回 null
  * @property {boolean} [needsBody]
  * @property {boolean} [rawBody]
+ * @property {(ctx: any) => {status?: number, body?: object, cwd?: string}} [preflight]
  * @property {(key: string) => string} [probe]
  * @property {(ctx: any) => Promise<{ status: number, body: unknown } | null>} run
  */
@@ -67,11 +68,12 @@ export function buildRoutes({ auth }) {
       // permissionMode 一并捎上：界面上那条「全部放行」的横幅要在**每一屏**都挂着，
       // 而 health 是唯一一个各屏都会打的轻端点。单开一次请求只为了问这个，
       // 等于让横幅比页面本身晚一拍出现。
-      run: async ({ config, principal }) => ({
+      run: async ({ config, principal, deviceId }) => ({
         status: 200,
         body: {
           ok: true,
           version: VERSION,
+          deviceId: deviceId ?? null,
           allowSend: config.allowSend,
           // 两边各自的档位。横幅要判「有没有哪一边开着全部放行」，
           // 而共用一个标量的时候这个判断必然漏掉另一边。
@@ -81,6 +83,7 @@ export function buildRoutes({ auth }) {
           canSetPermissionMode: (principal?.roots ?? null) === null,
           principal: {
             id: principal?.id ?? OWNER_ID,
+            ...(principal?.generation ? { generation: principal.generation } : {}),
             isOwner: (principal?.roots ?? null) === null,
           },
         },
@@ -158,7 +161,8 @@ export function buildRoutes({ auth }) {
       probe: () => '/api/push/subscribe',
       // 身份取自已认证的 principal，不从 body 里读——读了访客就能自报 owner，
       // 于是收到 owner 的全部通知
-      run: async ({ body, principal }) => pushSubscribeHandler(body, principal.id),
+      run: async ({ body, principal, deviceId }) => pushSubscribeHandler(body, principal, deviceId,
+        (id) => auth.isSessionValid({ deviceId: id, principalId: principal.id })),
     },
     {
       name: 'pushUnsubscribeHandler',
@@ -166,7 +170,7 @@ export function buildRoutes({ auth }) {
       match: (p) => (p === '/api/push/unsubscribe' ? true : null),
       needsBody: true,
       probe: () => '/api/push/unsubscribe',
-      run: async ({ body, principal }) => pushUnsubscribeHandler(body, principal.id),
+      run: async ({ body, principal, deviceId }) => pushUnsubscribeHandler(body, principal, deviceId),
     },
     {
       // service worker 被推醒之后来问「刚才结束的是哪一轮」。
@@ -175,7 +179,7 @@ export function buildRoutes({ auth }) {
       method: 'GET',
       match: (p) => (p === '/api/push/latest' ? true : null),
       probe: () => '/api/push/latest',
-      run: async ({ principal }) => pushLatest(principal.id),
+      run: async ({ principal, repo }) => pushLatest(principal, repo),
     },
     {
       // 可选模型。列表现推，不写死——这台机器两边都走第三方中转，
@@ -266,13 +270,19 @@ export function buildRoutes({ auth }) {
       }),
     },
     {
+      name: 'creationStatus', method: 'GET',
+      match: (p) => /^\/api\/session-creations\/([0-9a-f-]{36})$/.exec(p)?.[1] ?? null,
+      probe: () => '/api/session-creations/00000000-0000-0000-0000-000000000000',
+      run: async ({ match, principal, repo }) => creationStatus({ turnId: match, principal, repo }),
+    },
+    {
       // 切模型。落在会话上而不是设备上——两台设备必须看到同一个选择。
       name: 'setSessionModel',
       method: 'POST',
       match: (p) => sessionSub(p, 'model'),
       needsBody: true,
       probe: (key) => `/api/sessions/${encodeURIComponent(key)}/model`,
-      run: async ({ repo, match, body }) => setSessionModel({ repo, key: match, model: body.model }),
+      run: async ({ repo, config, match, body }) => setSessionModel({ repo, config, key: match, model: body.model }),
     },
     {
       // 思考强度。和模型并列、同样落在会话上，但**独立端点**——
@@ -282,7 +292,7 @@ export function buildRoutes({ auth }) {
       match: (p) => sessionSub(p, 'effort'),
       needsBody: true,
       probe: (key) => `/api/sessions/${encodeURIComponent(key)}/effort`,
-      run: async ({ repo, match, body }) => setSessionEffort({ repo, key: match, effort: body.effort }),
+      run: async ({ repo, config, match, body }) => setSessionEffort({ repo, config, key: match, effort: body.effort }),
     },
     {
       name: 'getEvents',
@@ -346,6 +356,7 @@ export function buildRoutes({ auth }) {
         principalOf: auth?.principalOf ?? null,
         key: match,
         message: body.message,
+        requestId: body.requestId,
         fork: body.fork === true,
         // 'now' = 人自己按了「立刻发送」。只放行「电脑上那一轮」这一条，
         // 不放行 Baton 自己那一轮（见 sendMessage 里那段）。
@@ -368,15 +379,23 @@ export function buildRoutes({ auth }) {
       run: async ({ repo, config, match, body }) => cancelQueued({ repo, config, key: match, id: body.id }),
     },
     {
+      name: 'promoteQueued', method: 'POST', match: (p) => sessionSub(p, 'queue/promote'), needsBody: true,
+      probe: (key) => `/api/sessions/${encodeURIComponent(key)}/queue/promote`,
+      run: async ({ repo, config, principal, match, body }) => promoteQueued({
+        repo, config, principal, principalOf: auth?.principalOf ?? null, key: match, id: body.id,
+      }),
+    },
+    {
       // 传文件。body 是原始字节不是 JSON——base64 进 JSON 要多背 33% 的体积，
       // 而这条路上跑的是手机流量。文件名走 query。
       name: 'uploadFile',
       method: 'POST',
       match: (p) => sessionSub(p, 'upload'),
       rawBody: true,
+      preflight: ({ repo, config, principal, match }) => sessionUploadDestination({ repo, config, principal, key: match }),
       probe: (key) => `/api/sessions/${encodeURIComponent(key)}/upload?name=probe.txt`,
-      run: async ({ repo, config, match, raw, query }) => uploadFile({
-        repo, config, key: match, name: query.get('name'), bytes: raw,
+      run: async ({ repo, config, principal, match, raw, query }) => uploadFile({
+        repo, config, principal, key: match, name: query.get('name'), bytes: raw,
       }),
     },
     {
@@ -393,6 +412,7 @@ export function buildRoutes({ auth }) {
       method: 'POST',
       match: (p) => (p === '/api/uploads' ? true : null),
       rawBody: true,
+      preflight: ({ config, principal, query }) => cwdUploadDestination({ config, principal, cwd: query.get('cwd') }),
       probe: () => '/api/uploads?cwd=/tmp&name=probe.txt',
       run: async ({ config, principal, raw, query }) => uploadToCwd({
         config, principal, cwd: query.get('cwd'), name: query.get('name'), bytes: raw,
@@ -406,8 +426,8 @@ export function buildRoutes({ auth }) {
       method: 'GET',
       match: (p) => sessionSub(p, 'upload'),
       probe: (key) => `/api/sessions/${encodeURIComponent(key)}/upload?name=probe.txt`,
-      run: async ({ repo, match, query, res }) => downloadUpload({
-        repo, key: match, name: query.get('name'), res,
+      run: async ({ repo, principal, match, query, res }) => downloadUpload({
+        repo, principal, key: match, name: query.get('name'), res,
       }),
     },
     {
@@ -434,7 +454,8 @@ export function buildRoutes({ auth }) {
       needsBody: true,
       probe: (key) => `/api/sessions/${encodeURIComponent(key)}/goal`,
       run: async ({ repo, config, principal, match, body }) => setGoal({
-        repo, config, principal, key: match, objective: body?.objective, clear: body?.clear === true,
+        repo, config, principal, principalOf: auth?.principalOf ?? null, key: match,
+        objective: body?.objective, clear: body?.clear === true,
       }),
     },
     {
@@ -443,8 +464,8 @@ export function buildRoutes({ auth }) {
       method: 'GET',
       match: (p) => sessionSub(p, 'files'),
       probe: (key) => `/api/sessions/${encodeURIComponent(key)}/files`,
-      run: async ({ repo, match, query }) => listSessionFiles({
-        repo, key: match, path: query.get('path'),
+      run: async ({ repo, principal, match, query }) => listSessionFiles({
+        repo, principal, key: match, path: query.get('path'),
       }),
     },
     {
@@ -453,8 +474,8 @@ export function buildRoutes({ auth }) {
       method: 'GET',
       match: (p) => sessionSub(p, 'file'),
       probe: (key) => `/api/sessions/${encodeURIComponent(key)}/file?path=probe.txt`,
-      run: async ({ repo, match, query, res }) => downloadSessionFile({
-        repo, key: match, path: query.get('path'), res,
+      run: async ({ repo, principal, match, query, res }) => downloadSessionFile({
+        repo, principal, key: match, path: query.get('path'), res,
       }),
     },
     {
@@ -505,8 +526,8 @@ export function buildRoutes({ auth }) {
 // 新增 handler 忘了登记，测试就红。
 export const ROUTED_HANDLERS = [
   'health', 'mintPairingCode', 'mintPairQr', 'listDevices', 'revokeDevice',
-  'listSessions', 'createSession', 'getEvents',
-  'sessionState', 'streamSession', 'exportSession', 'sendMessage', 'cancelQueued', 'stopTurn', 'getEventFull',
+  'listSessions', 'createSession', 'creationStatus', 'getEvents',
+  'sessionState', 'streamSession', 'exportSession', 'sendMessage', 'cancelQueued', 'promoteQueued', 'stopTurn', 'getEventFull',
   'pushKey', 'pushSubscribeHandler', 'pushUnsubscribeHandler', 'pushLatest',
   'listModels', 'setSessionModel', 'uploadFile', 'uploadToCwd', 'downloadUpload', 'browseDirs', 'makeDir',
   'listSessionFiles', 'downloadSessionFile',

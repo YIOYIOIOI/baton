@@ -33,7 +33,12 @@ import { errorBody } from '../errors.js';
  * 独立端点而不是塞进 `/model`：那条已经在用（网页端客户端也在调），把两件事
  * 并进一个请求体会让「只改其中一个」变成一次可能误清另一个的写。
  */
-export function setSessionEffort({ repo, key, effort }) {
+function readOnlyPreference() {
+  return { status: 403, body: errorBody('send_disabled', '只读模式下不能更改会话偏好。', '请使用有写入权限的身份。') };
+}
+
+export function setSessionEffort({ repo, config, key, effort }) {
+  if (config?.allowSend !== true) return readOnlyPreference();
   const member = repo.getSession(key);
   if (!member) {
     return { status: 404, body: errorBody('unknown_session', `找不到会话 ${key}。`, '返回列表刷新一次。') };
@@ -182,7 +187,8 @@ export async function listModels({
 }
 
 /** 设置（或清除）某个会话用哪个模型。传空字符串/null = 回到 agent 默认。 */
-export function setSessionModel({ repo, key, model, prefs = { set: setModel, get: getModel } }) {
+export function setSessionModel({ repo, config, key, model, prefs = { set: setModel, get: getModel } }) {
+  if (config?.allowSend !== true) return readOnlyPreference();
   if (!repo.getSession(key)) {
     return { status: 404, body: errorBody('unknown_session', `找不到会话 ${key}。`, '返回列表刷新一次。') };
   }

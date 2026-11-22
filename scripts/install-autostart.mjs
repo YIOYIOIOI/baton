@@ -34,7 +34,7 @@ function xmlEscape(s) {
 }
 
 function systemdQuote(s) {
-  return `"${String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+  return `"${String(s).replace(/%/g, '%%').replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
 }
 
 export function buildStartArgs({ port = null, host = null, readOnly = false } = {}) {
@@ -53,7 +53,8 @@ export function buildLaunchdPlist({
   nodePath = process.execPath,
   cliPath = path.join(REPO_ROOT, 'src', 'cli.js'),
   workDir = REPO_ROOT,
-  logDir = path.join(BATON_DIR, 'logs'),
+  dataDir = path.resolve(BATON_DIR),
+  logDir = path.posix.join(dataDir, 'logs'),
   port = null,
   host = null,
   readOnly = false,
@@ -77,14 +78,19 @@ export function buildLaunchdPlist({
     '  </array>',
     '  <key>WorkingDirectory</key>',
     `  <string>${xmlEscape(safeWork)}</string>`,
+    '  <key>EnvironmentVariables</key>',
+    '  <dict>',
+    '    <key>BATON_DIR</key>',
+    `    <string>${xmlEscape(assertSafeValue('dataDir', dataDir))}</string>`,
+    '  </dict>',
     '  <key>RunAtLoad</key>',
     '  <true/>',
     '  <key>KeepAlive</key>',
     '  <true/>',
     '  <key>StandardOutPath</key>',
-    `  <string>${xmlEscape(path.posix.join(safeLog.replace(/\\/g, '/'), 'baton.out.log'))}</string>`,
+    `  <string>${xmlEscape(path.posix.join(safeLog, 'baton.out.log'))}</string>`,
     '  <key>StandardErrorPath</key>',
-    `  <string>${xmlEscape(path.posix.join(safeLog.replace(/\\/g, '/'), 'baton.err.log'))}</string>`,
+    `  <string>${xmlEscape(path.posix.join(safeLog, 'baton.err.log'))}</string>`,
     '</dict>',
     '</plist>',
     '',
@@ -95,6 +101,7 @@ export function buildSystemdUnit({
   nodePath = process.execPath,
   cliPath = path.join(REPO_ROOT, 'src', 'cli.js'),
   workDir = REPO_ROOT,
+  dataDir = path.resolve(BATON_DIR),
   port = null,
   host = null,
   readOnly = false,
@@ -103,7 +110,7 @@ export function buildSystemdUnit({
   const safeCli = assertSafeValue('cliPath', cliPath);
   const safeWork = assertSafeValue('workDir', workDir);
   const argv = [safeNode, safeCli, ...buildStartArgs({ port, host, readOnly })]
-    .map(systemdQuote)
+    .map((arg) => systemdQuote(arg.replaceAll('$', () => '$$')))
     .join(' ');
   return [
     '[Unit]',
@@ -113,7 +120,8 @@ export function buildSystemdUnit({
     '',
     '[Service]',
     'Type=simple',
-    `WorkingDirectory=${safeWork}`,
+    `WorkingDirectory=${safeWork.replaceAll('%', '%%')}`,
+    `Environment=${systemdQuote('BATON_DIR=' + assertSafeValue('dataDir', dataDir))}`,
     `ExecStart=${argv}`,
     'Restart=on-failure',
     'RestartSec=5',
@@ -144,7 +152,7 @@ export function buildWindowsStartupScript({
   return [
     '@echo off',
     'setlocal',
-    `where pwsh.exe >nul 2>nul && (pwsh.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "${rawScript}"${tail}) || (powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "${rawScript}"${tail})`,
+    `pwsh.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "${rawScript}"${tail}`,
     '',
   ].join('\r\n');
 }

@@ -1,4 +1,4 @@
-import { StrictMode } from 'react';
+import { StrictMode, useEffect, useSyncExternalStore } from 'react';
 import { createRoot } from 'react-dom/client';
 import './tokens.css';
 import './shared.css';
@@ -9,6 +9,7 @@ import { Shell } from './Shell';
 import { Conversation } from './Conversation';
 import { NewSession } from './NewSession';
 import { About } from './About';
+import { getBrowserLock, onBrowserLock, retryBrowserUnpair } from '../../app/src/store/browserSession';
 
 /**
  * 路由。手写，没装 react-router——见 router.tsx 抬头。
@@ -18,7 +19,17 @@ import { About } from './About';
  */
 function Route() {
   const path = usePath();
+  const lock = useSyncExternalStore(onBrowserLock, getBrowserLock);
+  useEffect(() => {
+    if (lock !== 'pending') return;
+    const retry = () => { void retryBrowserUnpair(); };
+    retry();
+    const timer = setInterval(retry, 15_000);
+    window.addEventListener('online', retry);
+    return () => { clearInterval(timer); window.removeEventListener('online', retry); };
+  }, [lock]);
 
+  if (lock === 'pending' || (lock && path !== '/pair')) return <Welcome pending={lock === 'pending'} />;
   if (path === '/welcome') return <Welcome />;
   if (path === '/pair') return <Pair />;
   /*

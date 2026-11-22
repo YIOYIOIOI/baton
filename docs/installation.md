@@ -9,6 +9,8 @@
   - **Gemini Antigravity** (`agy` in `PATH`, Antigravity IDE / local bridge)
 - Optional: `cloudflared` (for Cloudflare Quick Tunnel or Named Tunnel remote HTTPS access) or **Tailscale** (for private mesh access).
 
+Session file downloads and attachment previews require the host to report the final path of an open file. Windows looks for PowerShell 7 under the host's 64-bit Program Files directory, usually `C:\Program Files\PowerShell\7\pwsh.exe`. For another host installation, set `BATON_PWSH7` to the canonical absolute path of a trusted `pwsh.exe` before starting Baton. `baton doctor` reports the selected path and its availability. NTFS downloads can share a verifier. Volumes such as exFAT or ReFS use a separate check on the original handle, which can take longer. Baton returns HTTP 503 if this verification is unavailable. Linux needs `/proc/self/fd`. macOS uses the system `/usr/bin/perl` to query the file handle.
+
 ---
 
 ## 2. Option A — Install Prebuilt Release (Fastest)
@@ -104,23 +106,27 @@ npm run autostart -- --uninstall
 
 ## 6. Multi-Principal Guest Access
 
-Create `~/.baton/principals.json` (never committed to git) to grant collaborators scoped access to specific workspace directories:
+Create `~/.baton/principals.json` to grant a collaborator access to one workspace directory. Use an absolute path on the host.
 
 ```json
-[
-  {
-    "id": "teammate",
-    "name": "Alice",
-    "roots": ["/path/to/shared-project"],
-    "allowSend": true
-  }
-]
+{
+  "guests": [
+    {
+      "id": "teammate",
+      "name": "Alice",
+      "root": "/path/to/shared-project",
+      "allowSend": true
+    }
+  ]
+}
 ```
 
-Then mint a pairing code scoped to that principal:
+Restart Baton to load the configuration. Then mint a pairing code for the guest.
 
 ```bash
 baton pair --for teammate
 ```
 
-Guests only see sessions whose `cwd` resolves inside their `roots`, cannot browse or upload outside `roots`, cannot access owner quota telemetry (`/api/usage`) or permission toggles (`/api/permission`), and see only their own devices in `/api/devices`.
+Guests see sessions whose working directories resolve inside their configured `root`. Directory browsing and uploads use the same boundary. Guests can read current permission settings and see their own connected devices. Only the owner can change permission settings or read host quota telemetry.
+
+Omit `root` to use `workspacesRoot/<id>`. Omit `allowSend` to inherit the host's setting, or use `false` for a read-only guest. When reassigning the same ID to a new person with the same name and directory, set or increase `credentialVersion` and restart before pairing the new person. [Guest configuration reference](cli.md#batonprincipalsjson)

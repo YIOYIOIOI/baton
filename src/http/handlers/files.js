@@ -5,10 +5,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { pipeline } from 'node:stream';
-import { inScope } from '../../scope.js';
+import { scopedPath, UPLOAD_DIR } from '../../scope.js';
 import { saveUpload, readUpload, MAX_BYTES } from '../../upload.js';
-import { listInCwd, openInCwd } from '../../sessionfs.js';
-import { mimeOf } from '../static.js';
+import { canonicalCwd, listInCwd, openInCwd } from '../../sessionfs.js';
+import { inWebRoot, mimeOf } from '../static.js';
 import { errorBody } from '../errors.js';
 
 /**
@@ -18,7 +18,7 @@ import { errorBody } from '../errors.js';
  * 界面上的取舍而非安全边界——他建会话时就能指定任意目录；对访客它是真边界，
  * 因为他的 cwd 本来就被 roots 锁住了。
  */
-export function listSessionFiles({ repo, key, path: rel, list = listInCwd }) {
+export function listSessionFiles({ repo, principal = null, key, path: rel, list = listInCwd }) {
   const member = repo.getSession(key);
   if (!member) {
     return { status: 404, body: errorBody('unknown_session', `找不到会话 ${key}。`, '返回列表刷新一次。') };
@@ -31,7 +31,7 @@ export function listSessionFiles({ repo, key, path: rel, list = listInCwd }) {
     };
   }
   try {
-    return { status: 200, body: { cwd: member.cwd, ...list(member.cwd, rel) } };
+    return { status: 200, body: { cwd: member.cwd, ...list(member.cwd, rel, principal?.roots != null) } };
   } catch (err) {
     if (err.code === 'OUTSIDE') {
       return {
@@ -56,7 +56,8 @@ export function listSessionFiles({ repo, key, path: rel, list = listInCwd }) {
  * 和 `downloadUpload` 一样自己接管 `res` 并返回 null——走 JSON 要背 33% 的 base64。
  * 区别只在范围：那个只认 `.baton-uploads/` 下的文件名，这个是整棵工作目录子树。
  */
-export function downloadSessionFile({ repo, key, path: rel, res, open = openInCwd, mime = mimeOf }) {
+export async function downloadSessionFile({ repo, principal = null, key, path: rel, res, open = openInCwd, mime = mimeOf }) {
+  res?.setHeader?.('Cache-Control', UNTRUSTED_FILE['Cache-Control']);
   const member = repo.getSession(key);
   if (!member) {
     return { status: 404, body: errorBody('unknown_session', `找不到会话 ${key}。`, '返回列表刷新一次。') };
@@ -66,8 +67,9 @@ export function downloadSessionFile({ repo, key, path: rel, res, open = openInCw
   }
   let file;
   try {
-    file = open(member.cwd, rel);
+    file = await open(member.cwd, rel, principal?.roots != null);
   } catch (err) {
+    if (err.code === 'FILE_CHECK_BUSY' || err.code === 'FILE_CHECK_UNAVAILABLE') return fileCheckError(err.code);
     if (err.code === 'OUTSIDE') {
       return {
         status: 403,
@@ -77,21 +79,26 @@ export function downloadSessionFile({ repo, key, path: rel, res, open = openInCw
     // 不存在、是目录、读不动——对调用方都是「取不到」，不分得更细
     return { status: 404, body: errorBody('no_such_file', '取不到这个文件。', '回上一层看看它还在不在。') };
   }
-  res.writeHead(200, {
-    'Content-Type': mime(file.name),
-    'Content-Length': file.size,
-    /**
-     * `attachment` + 原文件名：点了就是下载，而不是在浏览器里打开一个 .js 当文本看。
-     * 文件名走 RFC 5987 的 `filename*`，否则中文名到了浏览器里就是乱码。
-     */
-    'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(file.name)}`,
-    ...UNTRUSTED_FILE,
-    // 工作目录里的文件**会变**，不能像上传那样永久缓存
-    'Cache-Control': 'private, no-cache',
-  });
-  // 一段一段流出去，不整个读进内存（见 sessionfs.openInCwd）。pipeline 负责两头的收尾：
-  // 客户端中途断开、或者读到一半出错，都会关掉 fd、断开连接，不留半截
-  pipeline(fs.createReadStream(file.full, { fd: file.fd }), res, () => {});
+  let source;
+  try {
+    res.writeHead(200, {
+      'Content-Type': mime(file.name),
+      'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(file.name)}`,
+      ...UNTRUSTED_FILE,
+    });
+    // 上限取打开时的大小。HTTP 按实际发送的字节分块，文件中途截短也能正常结束。
+    if (file.size) {
+      source = fs.createReadStream(file.full, { fd: file.fd, start: 0, end: file.size - 1 });
+      pipeline(source, res, () => {});
+    } else {
+      res.end();
+    }
+  } catch (err) {
+    source?.destroy();
+    throw err;
+  } finally {
+    if (!source) fs.closeSync(file.fd);
+  }
   return null;
 }
 
@@ -117,6 +124,7 @@ export function downloadSessionFile({ repo, key, path: rel, res, open = openInCw
  * 图片嵌在 `<img>` 里不受这两个头影响。
  */
 const UNTRUSTED_FILE = {
+  'Cache-Control': 'private, no-store',
   'X-Content-Type-Options': 'nosniff',
   'Content-Security-Policy': "sandbox; default-src 'none'",
 };
@@ -124,7 +132,15 @@ const UNTRUSTED_FILE = {
 /** 可以直接在页面里显示的类型：只有常见位图。SVG 能带脚本，不在其中。 */
 const INLINE_IMAGE = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/bmp', 'image/avif']);
 
-export function downloadUpload({ repo, key, name, res, read = readUpload, mime = mimeOf }) {
+function fileCheckError(code) {
+  if (code === 'FILE_CHECK_BUSY') {
+    return { status: 503, body: errorBody('file_check_busy', '正在核实其他下载。', '请稍后重试。') };
+  }
+  return { status: 503, body: errorBody('file_check_unavailable', '这台电脑暂时无法核实文件位置。', '请在电脑上打开文件，或检查系统的文件校验工具。') };
+}
+
+export async function downloadUpload({ repo, principal = null, key, name, res, read = readUpload, mime = mimeOf }) {
+  res?.setHeader?.('Cache-Control', UNTRUSTED_FILE['Cache-Control']);
   const member = repo.getSession(key);
   if (!member) {
     return { status: 404, body: errorBody('unknown_session', `找不到会话 ${key}。`, '返回列表刷新一次。') };
@@ -134,8 +150,9 @@ export function downloadUpload({ repo, key, name, res, read = readUpload, mime =
   }
   let file;
   try {
-    file = read({ cwd: member.cwd, name });
+    file = await read({ cwd: member.cwd, name, pinnedCwd: principal?.roots != null });
   } catch (err) {
+    if (err.code === 'FILE_CHECK_BUSY' || err.code === 'FILE_CHECK_UNAVAILABLE') return fileCheckError(err.code);
     if (err?.code === 'UPLOAD_TOO_LARGE') {
       return {
         status: 413,
@@ -160,9 +177,6 @@ export function downloadUpload({ repo, key, name, res, read = readUpload, mime =
     ...(INLINE_IMAGE.has(type.split(';')[0].trim())
       ? {}
       : { 'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(file.name)}` }),
-    // 传上去的文件按内容寻址不了，但它**不会被改**（同名不覆盖，见 uniquePath），
-    // 所以可以让手机长期缓存——省的正是重复下载同一张图的流量
-    'Cache-Control': 'private, max-age=31536000, immutable',
   });
   res.end(file.bytes);
   return null;
@@ -174,7 +188,7 @@ export function downloadUpload({ repo, key, name, res, read = readUpload, mime =
  * 归在 allowSend 之下：它往 owner 的磁盘上写东西，权限只会比发消息更重，不会更轻。
  * 返回的 `relative` 是给人往消息里贴的——agent 认的是路径，不是附件。
  */
-export function uploadFile({ repo, config, key, name, bytes, save = saveUpload }) {
+export function sessionUploadDestination({ repo, config, principal = null, key }) {
   if (config.allowSend !== true) {
     return {
       status: 403,
@@ -193,8 +207,42 @@ export function uploadFile({ repo, config, key, name, bytes, save = saveUpload }
         '在电脑上于某个项目目录里新建一个会话，再从那里传。'),
     };
   }
+  return attachmentDestination(member.cwd, principal?.roots != null);
+}
+
+export function uploadFile({ repo, config, principal = null, key, name, bytes, save = saveUpload }) {
+  const target = sessionUploadDestination({ repo, config, principal, key });
+  if ('status' in target) return target;
+  return storeAttachment({ cwd: target.cwd, name, bytes, save });
+}
+
+function publicDirectoryDenied() {
+  return { status: 403, body: errorBody('public_upload_directory', '客户端公开资源目录不能存放附件。', '请选择客户端公开资源目录之外的工作目录。') };
+}
+
+function attachmentDestination(cwd, pinnedCwd) {
   try {
-    const r = save({ cwd: member.cwd, name, bytes });
+    const real = canonicalCwd(cwd, pinnedCwd);
+    if (fs.statSync(real).isDirectory()) {
+      const dir = path.join(real, UPLOAD_DIR);
+      if (inWebRoot(dir)) return publicDirectoryDenied();
+      const existing = fs.lstatSync(dir, { throwIfNoEntry: false });
+      if (existing && !existing.isDirectory()) {
+        return { status: 403, body: errorBody('unsafe_upload_directory', '附件目录不是普通目录。', '请选择其他工作目录。') };
+      }
+      return { cwd: real };
+    }
+  } catch (err) {
+    if (err.code === 'OUTSIDE') {
+      return { status: 403, body: errorBody('cwd_not_allowed', '工作目录的位置已改变。', '请选择工作区中的目录。') };
+    }
+  }
+  return { status: 400, body: errorBody('cwd_not_found', `目录不存在或不可用：${cwd}`, '先用 POST /api/dirs 把它建出来。') };
+}
+
+function storeAttachment({ cwd, name, bytes, save }) {
+  try {
+    const r = save({ cwd, name, bytes, pinnedCwd: true });
     return {
       status: 201,
       body: {
@@ -203,10 +251,13 @@ export function uploadFile({ repo, config, key, name, bytes, save = saveUpload }
       },
     };
   } catch (err) {
+    if (err.code === 'PUBLIC_UPLOAD_DIR') {
+      return publicDirectoryDenied();
+    }
     return {
       status: 400,
       body: errorBody('upload_failed', err.message,
-        `确认工作目录 ${member.cwd} 存在且可写，文件不超过 ${MAX_BYTES / 1048576} MB。`),
+        `确认工作目录 ${cwd} 存在且可写，文件不超过 ${MAX_BYTES / 1048576} MB。`),
     };
   }
 }
@@ -225,13 +276,11 @@ export function uploadFile({ repo, config, key, name, bytes, save = saveUpload }
  *
  * ## 它不比「在这个目录建会话」多给任何权限
  *
- * 判据逐条照抄 createSession 对 cwd 的那三条，再加上同一道写入闸：
+ * 与 createSession 共用 cwd 授权，再检查附件的存储位置。
  *
  *   allowSend ∧ 绝对路径 ∧ inScope(roots) ∧ 目录已存在
  *
- * 能在某个目录起 agent 的人，本来就能让文件被写进那个目录——agent 自己就在那儿写，
- * 而 Baton 不传任何沙箱参数。所以这条端点的可达集合恰好等于「他能建会话的地方」，
- * 不多一个字节。对访客仍然被 roots 锁死。
+ * 所有身份的附件均须位于公开资源目录之外。
  *
  * 落盘那一层原样走 `saveUpload`，与按 key 那条**完全同一段代码**：safeName 压成
  * 叶子名、realpath 确认仍在 cwd 之内、同名不覆盖、大小上限。这里一个字节的
@@ -240,7 +289,7 @@ export function uploadFile({ repo, config, key, name, bytes, save = saveUpload }
  * **不替人建目录**：目录不存在就是 400。建出来是另一件事（POST /api/dirs），
  * 而在这里顺手 mkdir 等于让一个上传端点能在 roots 下造任意目录树。
  */
-export function uploadToCwd({ config, principal, cwd, name, bytes, save = saveUpload }) {
+export function cwdUploadDestination({ config, principal, cwd }) {
   if (config.allowSend !== true) {
     return {
       status: 403,
@@ -255,41 +304,19 @@ export function uploadToCwd({ config, principal, cwd, name, bytes, save = saveUp
         '用 GET /api/dirs 浏览可选目录。'),
     };
   }
-  const dir = path.resolve(cwd);
-  if (!inScope(dir, principal?.roots ?? null)) {
+  const dir = scopedPath(cwd, principal);
+  if (!dir) {
     return {
       status: 403,
-      body: errorBody('cwd_not_allowed', `工作目录不在你的工作区里：${dir}`,
+      body: errorBody('cwd_not_allowed', `工作目录不在你的工作区里：${cwd}`,
         `你的工作区是 ${principal.roots.join('、')}，只能往它下面传。`),
     };
   }
-  let isDir = false;
-  try {
-    isDir = fs.statSync(dir).isDirectory();
-  } catch {
-    isDir = false;
-  }
-  if (!isDir) {
-    return {
-      status: 400,
-      body: errorBody('cwd_not_found', `目录不存在：${dir}`,
-        '先用 POST /api/dirs 把它建出来。'),
-    };
-  }
-  try {
-    const r = save({ cwd: dir, name, bytes });
-    return {
-      status: 201,
-      body: {
-        ...r,
-        note: `已存到 ${r.relative}。在消息里写上这个路径，agent 才会去读它。`,
-      },
-    };
-  } catch (err) {
-    return {
-      status: 400,
-      body: errorBody('upload_failed', err.message,
-        `确认 ${dir} 可写，文件不超过 ${MAX_BYTES / 1048576} MB。`),
-    };
-  }
+  return attachmentDestination(dir, principal?.roots != null);
+}
+
+export function uploadToCwd({ config, principal, cwd, name, bytes, save = saveUpload }) {
+  const target = cwdUploadDestination({ config, principal, cwd });
+  if ('status' in target) return target;
+  return storeAttachment({ cwd: target.cwd, name, bytes, save });
 }

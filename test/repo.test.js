@@ -129,6 +129,20 @@ test('重复调用命中缓存，不重复读头部', () => {
 
 import { encodeKey } from '../src/providers.js';
 
+test('同一转录仅接受列表给出的规范会话 key', () => {
+  const f = fixture();
+  const repo = createRepo(f);
+  const rel = `C--proj/${f.OWN}.jsonl`;
+  const key = encodeKey('claude', rel);
+  assert.equal(repo.getSession(key)?.key, key);
+  // 同一个无害的测试转录，用不同拼写查找时不能分配第二份运行状态。
+  const paths = [rel.replace('/', '//'), rel.replace('/', '\\'), rel.replace('/', '/./')];
+  const otherCase = rel.replace('C--proj', 'C--PROJ');
+  if (fs.existsSync(path.join(f.claudeRoot, otherCase))) paths.push(otherCase);
+  const alternates = [key + '=', ...paths.map((p) => encodeKey('claude', p))];
+  for (const alternate of alternates) assert.equal(repo.getSession(alternate), null, alternate);
+});
+
 test('getSession 不扫整棵树，也不每次重读整个注册表', () => {
   const f = fixture();
   const repo = createRepo(f);
@@ -216,6 +230,15 @@ test('在 App 里删掉的会话不列出', () => {
   const ids = listed(createRepo(f)).map((m) => m.providerId);
   assert.ok(!ids.includes(GONE));
   assert.ok(ids.includes(f.OWN), '注册表里活着就以注册表为准');
+  const recover = createRepo(f);
+  const key = encodeKey('claude', `C--proj/${GONE}.jsonl`);
+  assert.equal(recover.getSessionForRecovery(key).status, 'missing');
+  fs.unlinkSync(path.join(f.claudeRoot, 'C--proj', GONE + '.jsonl'));
+  assert.equal(recover.getSessionForRecovery(key).status, 'missing');
+  const activeKey = encodeKey('claude', `C--proj/${f.OWN}.jsonl`);
+  assert.equal(recover.getSessionForRecovery(activeKey).status, 'present');
+  fs.renameSync(path.join(f.claudeRoot, 'C--proj', f.OWN + '.jsonl'), path.join(f.claudeRoot, 'rotated.jsonl'));
+  assert.equal(recover.getSessionForRecovery(activeKey).status, 'unavailable');
 });
 
 /*

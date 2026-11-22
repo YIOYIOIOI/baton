@@ -10,7 +10,17 @@
  * 而那已经由传输轴负责了。
  */
 
-const VERSION = 'baton-sw-1';
+const VERSION = 'baton-sw-2';
+const PUSH_CACHE = 'baton-push-access-v1';
+const PUSH_KEY = '/.baton/push-access';
+let blockedEpoch = null;
+
+async function pushAccess() {
+  try {
+    const grant = await (await (await caches.open(PUSH_CACHE)).match(PUSH_KEY))?.text();
+    return grant && grant !== blockedEpoch ? grant : null;
+  } catch { return null; }
+}
 
 self.addEventListener('install', () => self.skipWaiting());
 self.addEventListener('activate', (e) => e.waitUntil(self.clients.claim()));
@@ -29,16 +39,17 @@ self.addEventListener('push', (event) => {
     let title = 'Baton';
     let body = '那台电脑上有动静了';
     let data = {};
+    const epoch = await pushAccess();
 
     try {
       // 同源，浏览器会自动带上配对 cookie
-      const res = await fetch('/api/push/latest', { credentials: 'same-origin', cache: 'no-store' });
-      if (res.ok) {
+      const res = epoch && await fetch('/api/push/latest', { credentials: 'same-origin', cache: 'no-store' });
+      if (res?.ok) {
         const latest = await res.json();
-        if (latest?.title) {
+        if (latest?.title && epoch === await pushAccess()) {
           title = latest.title.length > 40 ? `${latest.title.slice(0, 40)}…` : latest.title;
           body = STATUS_TEXT[latest.status] ?? '有更新';
-          data = { key: latest.key };
+          data = { key: latest.key, epoch };
         }
       }
     } catch {
@@ -61,10 +72,10 @@ self.addEventListener('push', (event) => {
 
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
-  const key = event.notification.data?.key;
-  const target = key ? `/session/${encodeURIComponent(key)}` : '/';
-
   event.waitUntil((async () => {
+    const grant = await pushAccess();
+    const key = grant && grant === event.notification.data?.epoch && event.notification.data.key;
+    const target = key ? `/session/${encodeURIComponent(key)}` : '/';
     const wins = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
     // 已经开着就聚焦并导航过去——再开一个窗口，用户会有两份同样的界面
     for (const w of wins) {
@@ -82,11 +93,15 @@ self.addEventListener('notificationclick', (event) => {
 self.addEventListener('pushsubscriptionchange', (event) => {
   event.waitUntil((async () => {
     try {
+      const epoch = await pushAccess();
+      if (!epoch) return;
       const key = await (await fetch('/api/push/key', { credentials: 'same-origin' })).json();
+      if (epoch !== await pushAccess()) return;
       const sub = await self.registration.pushManager.subscribe({
         userVisibleOnly: true,
         applicationServerKey: key.publicKey,
       });
+      if (epoch !== await pushAccess()) return;
       await fetch('/api/push/subscribe', {
         method: 'POST',
         credentials: 'same-origin',
@@ -101,4 +116,18 @@ self.addEventListener('pushsubscriptionchange', (event) => {
 
 self.addEventListener('message', (e) => {
   if (e.data === 'version') e.source?.postMessage(VERSION);
+  if (e.data?.type === 'baton-push-lock' && typeof e.data.epoch === 'string') {
+    const epoch = e.data.epoch;
+    blockedEpoch = epoch;
+    const remove = async () => {
+      const cache = await caches.open(PUSH_CACHE);
+      if (await (await cache.match(PUSH_KEY))?.text() === epoch) await cache.delete(PUSH_KEY);
+    };
+    e.waitUntil((async () => {
+      await (self.navigator.locks?.request('baton.push-access', remove) ?? remove());
+      for (const notice of await self.registration.getNotifications({ tag: 'baton-turn' })) {
+        if (!notice.data?.epoch || notice.data.epoch === epoch) notice.close();
+      }
+    })());
+  }
 });

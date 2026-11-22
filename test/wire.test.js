@@ -76,9 +76,9 @@ test('超长载荷首尾都留——失败信息几乎总在尾部', () => {
 
 // ── 两条出网路径都必须截断 ────────────────────────
 
-test('分页路径截断 tool.output 与 tool.input', () => {
+test('分页路径截断 tool.output 与 tool.input', async () => {
   const { member } = fixture();
-  const { events } = pageEvents(member, { limit: 50 });
+  const { events } = await pageEvents(member, { limit: 50 });
 
   const result = events.find((e) => e.kind === 'tool_result');
   assert.ok(result.tool.output.length < 5000, `分页没截断：${result.tool.output.length} 字`);
@@ -101,7 +101,7 @@ test('tail-follow 路径同样截断——两条路径漏一条就等于没做',
   assert.ok(String(fs.readFileSync(file)).includes(HUGE), '原始文件不受影响，截断只发生在出网时');
 });
 
-test('text 不截——它是用户真正要读的回答', () => {
+test('text 不截——它是用户真正要读的回答', async () => {
   const root = tmpDir();
   const id = 'aaaaaaaa-0000-0000-0000-0000000000ee';
   const dir = path.join(root, 'C--proj');
@@ -113,22 +113,22 @@ test('text 不截——它是用户真正要读的回答', () => {
     message: { role: 'assistant', content: [{ type: 'text', text: long }] },
   }) + '\n');
   const member = { key: 'claude:t', agent: 'claude', file, providerId: id, cwd: 'C:\\proj' };
-  const { events } = pageEvents(member, { limit: 10 });
+  const { events } = await pageEvents(member, { limit: 10 });
   assert.equal(events[0].text.length, long.length, 'text 截了等于藏答案');
 });
 
-test('事件带 offset——没有它取全文就得扫完整个 transcript（实测最大 175 MB）', () => {
+test('事件带 offset——没有它取全文就得扫完整个 transcript（实测最大 175 MB）', async () => {
   const { member } = fixture();
-  const { events } = pageEvents(member, { limit: 50 });
+  const { events } = await pageEvents(member, { limit: 50 });
   for (const e of events) assert.equal(typeof e.offset, 'number');
 });
 
 // ── 取全文 ──────────────────────────────────────
 
-test('按 offset + 事件 id 取回未截断的全文', () => {
+test('按 offset + 事件 id 取回未截断的全文', async () => {
   const { member } = fixture();
   const repo = { getSession: (k) => (k === member.key ? member : null) };
-  const ev = pageEvents(member, { limit: 50 }).events.find((e) => e.kind === 'tool_result');
+  const ev = (await pageEvents(member, { limit: 50 })).events.find((e) => e.kind === 'tool_result');
 
   const r = getEventFull(repo, member.key, ev.id, { offset: ev.offset });
   assert.equal(r.status, 200);
@@ -137,10 +137,27 @@ test('按 offset + 事件 id 取回未截断的全文', () => {
   assert.equal(r.body.hasMore, false);
 });
 
-test('支持按字符区间续取——347 KB 一次推给手机同样不合适', () => {
+test('取指定事件全文，读到行尾就停止读取后续转录', async (t) => {
+  const { member, file } = fixture();
+  const first = (await pageEvents(member)).events[0];
+  fs.appendFileSync(file, Buffer.alloc(2 * 1024 * 1024, 32));
+  const read = fs.readSync;
+  let bytes = 0;
+  t.mock.method(fs, 'readSync', (...args) => {
+    const count = read(...args);
+    bytes += count;
+    return count;
+  });
+  const r = getEventFull({ getSession: () => member }, member.key, first.id, { offset: first.offset });
+  assert.equal(r.status, 200);
+  assert.equal(r.body.text, first.text);
+  assert.ok(bytes <= 64 * 1024, `读取了 ${bytes} 字节`);
+});
+
+test('支持按字符区间续取——347 KB 一次推给手机同样不合适', async () => {
   const { member } = fixture();
   const repo = { getSession: () => member };
-  const ev = pageEvents(member, { limit: 50 }).events.find((e) => e.kind === 'tool_result');
+  const ev = (await pageEvents(member, { limit: 50 })).events.find((e) => e.kind === 'tool_result');
 
   const r = getEventFull(repo, member.key, ev.id, { offset: ev.offset, from: 0, to: 100 });
   assert.equal(r.body.text.length, 100);

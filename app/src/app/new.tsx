@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   KeyboardAvoidingView, Platform, ScrollView, StyleSheet, Text,
 } from 'react-native';
@@ -16,6 +16,7 @@ import { AttachMenu } from '@/components/AttachMenu';
 import { useConnection } from '@/store/connection';
 import { NEW_SESSION_DRAFT, useDraft } from '@/store/drafts';
 import { BatonError } from '@/api/client';
+import { watchCreation, type CreationReceipt } from '@/api/creationStatus';
 import {
   stage, pickStaged, pickedFromFiles, uploadStagedToCwd, attachmentSuffix, type Staged,
 } from '@/store/attach';
@@ -58,6 +59,17 @@ export default function NewScreen() {
   // 否则下次点「新会话」又冒出上一条
   const [draft, setDraft] = useDraft(NEW_SESSION_DRAFT);
   const [busy, setBusy] = useState(false);
+  const [receipt, setReceipt] = useState<(CreationReceipt & { client: typeof client; error?: string }) | null>(null);
+  const active = useRef(false);
+  useEffect(() => { active.current = true; return () => { active.current = false; }; }, []);
+  useEffect(() => {
+    if (!receipt || !client || receipt.client !== client || receipt.error !== undefined) return;
+    return watchCreation(receipt, client.creationStatus, (key) => {
+      if (active.current && useConnection.getState().client === client) router.replace({ pathname: '/session/[key]', params: { key } });
+    }, (error) => {
+      if (active.current && useConnection.getState().client === client) setReceipt({ ...receipt, error });
+    });
+  }, [receipt, client, router]);
   const [err, setErr] = useState<{ msg: string; fix: string; code?: string } | null>(null);
   /**
    * 还没传上去的附件。**会话还不存在，所以字节只能先留在本地。**
@@ -126,8 +138,12 @@ export default function NewScreen() {
       // 正文为空时就用附件清单本身当第一条消息（去掉它开头那两个换行）
       const message = text ? text + suffix : suffix.trimStart();
       const created = await client.createSession(agent, dir, message, model, effort);
+      if (!active.current || useConnection.getState().client !== client) return;
       setDraft('');
-      if (created.key) {
+      if (created.status === 'unconfirmed' && created.turnId) {
+        setStaged([]);
+        setReceipt({ turnId: created.turnId, statusUrl: created.statusUrl, client });
+      } else if (created.key) {
         router.replace({ pathname: '/session/[key]', params: { key: created.key } });
       } else {
         router.replace('/');
@@ -166,6 +182,18 @@ export default function NewScreen() {
   const s = styles(t);
   const barH = useFloatBarHeight();
 
+  if (receipt && receipt.client === client) return (
+    <KeyboardAvoidingView style={s.screen}>
+      <Stack.Screen options={{ headerShown: false }} />
+      <ScrollView contentContainerStyle={[s.hero, { paddingTop: barH }]}>
+        <Text style={s.h1}>{receipt.error !== undefined
+          ? receipt.error || (isEn ? 'This receipt is unavailable.' : '当前无法查看这张回执。')
+          : isEn ? 'Checking whether Antigravity Desktop created your session…' : '正在核对 Antigravity 桌面端是否已建好会话…'}</Text>
+        <Text selectable style={{ color: t.c.txTertiary }}>{isEn ? 'Request' : '查询编号'} {receipt.turnId}</Text>
+      </ScrollView>
+      <FloatBar onBack={() => router.back()} />
+    </KeyboardAvoidingView>
+  );
   return (
     <KeyboardAvoidingView style={s.screen} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
       <Stack.Screen options={{ headerShown: false }} />
