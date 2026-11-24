@@ -1,6 +1,11 @@
-import { createContext, useContext, type ReactNode } from 'react';
-import { Linking, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
+import { Linking, Platform, ScrollView, StyleSheet, Text, View } from 'react-native';
+import * as Clipboard from 'expo-clipboard';
 import { useTheme, type Theme } from '@/theme';
+import { IconCopy, IconTick } from '@/icons';
+import { Tappable } from './ui';
+import * as haptics from '@/feedback/haptics';
+import { useLocale } from '@/i18n';
 
 /**
  * Markdown 渲染。
@@ -347,6 +352,7 @@ function Inline({ text, style }: { text: string; style?: object }) {
 export function Markdown({ text }: { text: string }) {
   const t = useTheme();
   const s = md(t);
+  const { isEn } = useLocale();
   const blocks = parseBlocks(text);
 
   return (
@@ -361,31 +367,28 @@ export function Markdown({ text }: { text: string }) {
               </Text>
             );
           case 'code':
-            return (
-              <View key={i} style={s.block}>
-                {/* 代码块横向滚动，不折行——折行的代码读起来比截断还糟 */}
-                <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-                  <Text style={s.blockTx} selectable>{b.text}</Text>
-                </ScrollView>
-              </View>
-            );
+            return <CodeBlock key={i} lang={b.lang} text={b.text} />;
           case 'ul':
           case 'ol':
             return (
               <View key={i} style={s.list}>
                 {b.items.map((it, j) => (
                   <View key={j} style={[s.li, it.depth > 0 && { paddingLeft: it.depth * 16 }]}>
-                    {/*
-                      任务项用方框而不是圆点：**它带着一个状态**（做没做完），
-                      而圆点只是个记号。agent 汇报进度全靠这个形式。
-                      有序列表的序号按**同层的第几个**算，不是整张列表的第几个——
-                      嵌套时用全局序号会数出 1. 2. 3. 4. 这种没有层次的东西。
-                    */}
-                    <Text style={[s.bullet, it.task !== null && s.box]}>
-                      {it.task === null
-                        ? (b.k === 'ol' ? `${countAt(b.items, j)}.` : '•')
-                        : (it.task ? '☑' : '☐')}
-                    </Text>
+                    {it.task !== null ? (
+                      <View
+                        style={[s.taskBox, it.task && s.taskBoxDone]}
+                        accessible
+                        accessibilityRole="checkbox"
+                        accessibilityState={{ checked: it.task }}
+                        accessibilityLabel={it.task ? (isEn ? 'Completed' : '已完成') : (isEn ? 'Not completed' : '未完成')}
+                      >
+                        {it.task ? <IconTick size={11} color="#ffffff" strokeWidth={2.6} /> : null}
+                      </View>
+                    ) : (
+                      <Text style={s.bullet}>
+                        {b.k === 'ol' ? `${countAt(b.items, j)}.` : '•'}
+                      </Text>
+                    )}
                     <Text style={[s.liTx, it.task && s.liDone]} selectable>
                       <Inline text={it.text} />
                     </Text>
@@ -437,11 +440,23 @@ function countAt(items: Item[], at: number): number {
  * 不画竖线：行与行之间一道浅分隔线就够了，竖线在这个宽度上只会把本来就窄的
  * 格子切得更碎。表头靠加粗和一条稍重的线区分。
  */
+/** 粗略估算单元格文本视觉宽度（全角计 2，半角计 1），让表头与各行列宽对齐。 */
+function visualLen(s: string): number {
+  let n = 0;
+  for (const ch of s) n += ch.charCodeAt(0) > 0x7f ? 2 : 1;
+  return n;
+}
+
 function Table({ head, rows, align }: { head: string[]; rows: string[][]; align: Align[] }) {
   const t = useTheme();
   const s = md(t);
+  const colW = head.map((h, j) => {
+    let max = visualLen(h);
+    for (const r of rows) max = Math.max(max, visualLen(r[j] ?? ''));
+    return Math.min(220, Math.max(76, Math.round(max * 7.8 + 26)));
+  });
   const cell = (txt: string, j: number, strong?: boolean) => (
-    <View key={j} style={s.td}>
+    <View key={j} style={[s.td, { width: colW[j], flexGrow: colW[j] }]}>
       <Text
         style={[s.tdTx, strong && s.thTx, { textAlign: align[j] ?? 'left' }]}
         selectable
@@ -452,13 +467,65 @@ function Table({ head, rows, align }: { head: string[]; rows: string[][]; align:
   );
   return (
     <View style={s.table}>
-      <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-        <View>
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.tableScroll}>
+        <View style={s.tableInner}>
           <View style={[s.tr, s.thRow]}>{head.map((h, j) => cell(h, j, true))}</View>
           {rows.map((r, i) => (
-            <View key={i} style={[s.tr, i > 0 && s.trLine]}>{r.map((c, j) => cell(c, j))}</View>
+            <View key={i} style={[s.tr, i > 0 && s.trLine]}>{head.map((_, j) => cell(r[j] ?? '', j))}</View>
           ))}
         </View>
+      </ScrollView>
+    </View>
+  );
+}
+
+function CodeBlock({ lang, text }: { lang: string; text: string }) {
+  const t = useTheme();
+  const s = md(t);
+  const { isEn } = useLocale();
+  const [copied, setCopied] = useState(false);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => () => {
+    if (timerRef.current) clearTimeout(timerRef.current);
+  }, []);
+
+  const onCopy = async () => {
+    try {
+      await Clipboard.setStringAsync(text);
+      setCopied(true);
+      if (timerRef.current) clearTimeout(timerRef.current);
+      timerRef.current = setTimeout(() => {
+        timerRef.current = null;
+        setCopied(false);
+      }, 1400);
+    } catch {
+      // 剪贴板权限受限或非安全上下文时静默降级，不误报「已复制」
+    }
+  };
+
+  return (
+    <View style={s.block}>
+      <View style={s.codeHead}>
+        <Text style={s.codeLang} numberOfLines={1} ellipsizeMode="tail">{lang || 'code'}</Text>
+        <Tappable
+          style={s.codeCopy}
+          haptic={haptics.tap}
+          onPress={() => void onCopy()}
+          accessibilityRole="button"
+          accessibilityLabel={isEn ? 'Copy' : '复制'}
+        >
+          {copied
+            ? <IconTick size={12} color={t.c.txSuccess} strokeWidth={2.4} />
+            : <IconCopy size={12} color={t.c.txTertiary} />}
+          <Text style={[s.codeCopyTx, copied && { color: t.c.txSuccess }]}>
+            {copied ? (isEn ? 'Copied' : '已复制') : (isEn ? 'Copy' : '复制')}
+          </Text>
+        </Tappable>
+      </View>
+      {/* 代码块横向滚动，不折行——折行的代码读起来比截断还糟 */}
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.blockScroll}>
+        <Text style={s.blockTx} selectable>{text}</Text>
       </ScrollView>
     </View>
   );
@@ -467,63 +534,108 @@ function Table({ head, rows, align }: { head: string[]; rows: string[][]; align:
 const md = (t: Theme) =>
   StyleSheet.create({
     p: {
-      fontFamily: t.fonts.serif, fontSize: 16, lineHeight: 26.4,
-      color: t.c.txSecondary, marginBottom: 10,
+      fontFamily: t.fonts.serif, fontSize: 16, lineHeight: 26.8,
+      color: t.c.txSecondary, marginBottom: 11,
     },
     strong: { fontWeight: t.weight.bold, color: t.c.txPrimary },
     em: { fontStyle: 'italic' },
     del: { textDecorationLine: 'line-through', color: t.c.txTertiary },
     code: {
       fontFamily: t.fonts.mono, fontSize: 13.5, color: t.c.txPrimary,
+      backgroundColor: t.isDark ? 'rgba(255,255,255,0.08)' : 'rgba(34,33,31,0.06)',
+      borderRadius: 5,
+      ...(Platform.OS === 'web' ? { paddingHorizontal: 5, paddingVertical: 1 } : null),
     },
     link: { color: t.c.txInfo, textDecorationLine: 'underline' },
 
     h: {
-      fontFamily: t.fonts.serif, fontSize: 19, letterSpacing: -0.2,
+      fontFamily: t.fonts.serif, fontSize: 19, lineHeight: 27, letterSpacing: -0.25,
       color: t.c.txPrimary, fontWeight: t.weight.bold,
-      marginTop: 16, marginBottom: 7,
+      marginTop: 18, marginBottom: 8,
     },
-    h1: { fontSize: 22 },
-    h3: { fontSize: 17 },
+    h1: { fontSize: 22, lineHeight: 30, letterSpacing: -0.35 },
+    h3: { fontSize: 17, lineHeight: 25 },
 
     block: {
       backgroundColor: t.c.bgSecondary, borderRadius: t.radius.lg,
-      paddingVertical: 11, paddingHorizontal: 13, marginBottom: 12,
+      borderWidth: t.hairline, borderColor: t.c.bdTertiary,
+      overflow: 'hidden', marginBottom: 13,
     },
+    codeHead: {
+      flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8,
+      paddingLeft: 13, paddingRight: 4, minHeight: 40,
+      borderBottomWidth: t.hairline, borderBottomColor: t.c.bdTertiary,
+      backgroundColor: t.isDark ? 'rgba(255,255,255,0.03)' : 'rgba(34,33,31,0.025)',
+    },
+    codeLang: {
+      flex: 1, minWidth: 0,
+      fontFamily: t.fonts.mono, fontSize: 11, color: t.c.txTertiary,
+      letterSpacing: 0.4, textTransform: 'lowercase',
+    },
+    codeCopy: {
+      flexShrink: 0, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 4,
+      paddingHorizontal: 11, minHeight: 40, borderRadius: t.radius.md,
+    },
+    codeCopyTx: { fontFamily: t.fonts.sans, fontSize: 11.5, color: t.c.txTertiary, fontWeight: '500' },
+    blockScroll: { paddingVertical: 11, paddingHorizontal: 13 },
     blockTx: {
-      fontFamily: t.fonts.mono, fontSize: 12.5, lineHeight: 19.5, color: t.c.txPrimary,
+      fontFamily: t.fonts.mono, fontSize: 12.5, lineHeight: 20, color: t.c.txPrimary,
     },
 
-    list: { marginBottom: 10, gap: 5 },
-    li: { flexDirection: 'row', gap: 9 },
+    list: { marginBottom: 11, gap: 6 },
+    li: { flexDirection: 'row', gap: 9, alignItems: 'flex-start' },
     bullet: {
-      fontFamily: t.fonts.sans, fontSize: 15, lineHeight: 26.4,
-      color: t.c.txTertiary, minWidth: 15,
+      fontFamily: t.fonts.sans, fontSize: 15, lineHeight: 26.8,
+      color: t.c.txTertiary, minWidth: 16,
+    },
+    taskBox: {
+      width: 17, height: 17, marginTop: 5, borderRadius: 5,
+      borderWidth: 1.5, borderColor: t.c.bdSecondary,
+      alignItems: 'center', justifyContent: 'center',
+      backgroundColor: 'transparent',
+    },
+    taskBoxDone: {
+      backgroundColor: t.c.coral,
+      borderColor: t.c.coral,
     },
     liTx: {
-      flex: 1, fontFamily: t.fonts.serif, fontSize: 16, lineHeight: 26.4, color: t.c.txSecondary,
+      flex: 1, fontFamily: t.fonts.serif, fontSize: 16, lineHeight: 26.8, color: t.c.txSecondary,
     },
     // 做完的条目压淡但**不划掉**：划掉的字在手机上很难读，而它仍然是内容
     liDone: { color: t.c.txTertiary },
-    box: { fontFamily: t.fonts.sans, fontSize: 15 },
 
-    table: { marginBottom: 12 },
-    tr: { flexDirection: 'row' },
-    thRow: { borderBottomWidth: 1, borderBottomColor: t.c.bdSecondary },
-    trLine: { borderTopWidth: t.hairline, borderTopColor: t.c.bdTertiary },
-    td: { paddingVertical: 7, paddingRight: 18, minWidth: 56, maxWidth: 260 },
-    tdTx: {
-      fontFamily: t.fonts.sans, fontSize: 14, lineHeight: 21, color: t.c.txSecondary,
+    table: {
+      marginBottom: 13,
+      borderRadius: t.radius.lg,
+      borderWidth: t.hairline,
+      borderColor: t.c.bdTertiary,
+      overflow: 'hidden',
+      backgroundColor: t.c.bgPrimary,
     },
-    thTx: { fontWeight: t.weight.bold, color: t.c.txPrimary },
+    tableScroll: { flexGrow: 1 },
+    tableInner: { flexGrow: 1 },
+    tr: { flexDirection: 'row' },
+    thRow: {
+      backgroundColor: t.c.bgSecondary,
+      borderBottomWidth: t.hairline,
+      borderBottomColor: t.c.bdTertiary,
+    },
+    trLine: { borderTopWidth: t.hairline, borderTopColor: t.c.bdTertiary },
+    td: { paddingVertical: 8, paddingHorizontal: 12 },
+    tdTx: {
+      fontFamily: t.fonts.sans, fontSize: 13.5, lineHeight: 20, color: t.c.txSecondary,
+    },
+    thTx: { fontWeight: t.weight.bold, color: t.c.txPrimary, fontSize: 13 },
 
     quote: {
-      borderLeftWidth: 2.5, borderLeftColor: t.c.bdTertiary,
-      paddingLeft: 12, marginBottom: 12,
+      borderLeftWidth: 3, borderLeftColor: t.c.bdSecondary,
+      backgroundColor: t.isDark ? 'rgba(255,255,255,0.03)' : 'rgba(34,33,31,0.025)',
+      borderTopRightRadius: t.radius.md, borderBottomRightRadius: t.radius.md,
+      paddingLeft: 13, paddingRight: 12, paddingVertical: 8, marginBottom: 12,
     },
     quoteTx: {
-      fontFamily: t.fonts.serif, fontSize: 16, lineHeight: 26.4, color: t.c.txTertiary,
+      fontFamily: t.fonts.serif, fontSize: 15.5, lineHeight: 25.5, color: t.c.txTertiary,
     },
 
-    hr: { height: t.hairline, backgroundColor: t.c.bdTertiary, marginVertical: 14 },
+    hr: { height: t.hairline, backgroundColor: t.c.bdTertiary, marginVertical: 16 },
   });

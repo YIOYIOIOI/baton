@@ -8,7 +8,7 @@ import * as Clipboard from 'expo-clipboard';
 import { useTheme, type Theme } from '@/theme';
 import { IconCopy, IconDownload, IconFile, IconPlus, IconShare } from '@/icons';
 import { Chip, FloatBar, Tappable, useFloatBarHeight, useHydrated } from '@/components/ui';
-import { Glass } from '@/components/Glass';
+import { Glass, useGlassPath } from '@/components/Glass';
 import { ScrollEdge } from '@/components/ScrollEdge';
 import { Markdown } from '@/components/markdown';
 import * as haptics from '@/feedback/haptics';
@@ -61,6 +61,7 @@ function FileBody() {
   const router = useRouter();
   const inset = useSafeAreaInsets();
   const barH = useFloatBarHeight();
+  const glassPath = useGlassPath();
   const { key, path, size: rawSize } = useLocalSearchParams<{ key: string; path: string; size?: string }>();
   const client = useConnection((c) => c.client);
   const name = baseName(path ?? '');
@@ -167,11 +168,11 @@ function FileBody() {
           t={t}
           text={body.text}
           top={barH}
-          bottom={inset.bottom + 96}
+          bottom={inset.bottom + 104}
           header={<Head t={t} name={name} dir={dir} size={size} md={md} rendered={rendered} onRendered={setRendered} truncated={body.truncated} />}
         />
       ) : (
-        <ScrollView contentContainerStyle={{ paddingTop: barH, paddingBottom: inset.bottom + 96 }}>
+        <ScrollView contentContainerStyle={[s.scrollCol, { paddingTop: barH, paddingBottom: inset.bottom + 104 }]}>
           <Head
             t={t} name={name} dir={dir} size={size} md={md && body.kind === 'text'}
             rendered={rendered} onRendered={setRendered} truncated={body.kind === 'text' && body.truncated}
@@ -191,12 +192,13 @@ function FileBody() {
       )}
 
       <ScrollEdge height={barH} />
+      <ScrollEdge edge="bottom" height={Math.max(12, inset.bottom) + 78} />
       <FloatBar onBack={() => (router.canGoBack() ? router.back() : router.replace({ pathname: '/files/[key]', params: { key, path: dir } }))} />
 
       {/* 底部浮着的三颗。玻璃一整条，和选择模式那条同一个形制 */}
       <View style={[s.actions, { paddingBottom: Math.max(12, inset.bottom) }]} pointerEvents="box-none">
         {toast ? <Text style={s.toast}>{toast}</Text> : null}
-        <Glass radius={26} style={[s.actInner, t.shadow]}>
+        <Glass radius={26} style={[s.actInner, glassPath === 'opaque' && t.shadow]}>
           <Action t={t} label={web ? '下载' : '存储'} onPress={() => void take()} busy={taking}
             icon={web ? <IconDownload size={18} color={t.c.txPrimary} /> : <IconShare size={18} color={t.c.txPrimary} />} />
           <Action t={t} label="复制路径" onPress={() => void copy()} icon={<IconCopy size={18} color={t.c.txPrimary} />} />
@@ -246,7 +248,7 @@ function Lines({
       data={lines}
       keyExtractor={(_, i) => String(i)}
       ListHeaderComponent={header}
-      contentContainerStyle={{ paddingTop: top, paddingBottom: bottom }}
+      contentContainerStyle={[s.scrollCol, { paddingTop: top, paddingBottom: bottom }]}
       initialNumToRender={60}
       maxToRenderPerBatch={80}
       windowSize={15}
@@ -266,7 +268,7 @@ function Picture({ uri, headers }: { uri: string; headers?: Record<string, strin
   const { width } = useWindowDimensions();
   const [ratio, setRatio] = useState(4 / 3);
   const [failed, setFailed] = useState(false);
-  const w = width - t.space.pad * 2;
+  const w = Math.max(120, Math.min(width || 390, t.layout.contentMaxW) - t.space.pad * 2);
   if (failed) return <Text style={styles(t).noneTx}>图片解不出来。</Text>;
   return (
     <Image
@@ -298,6 +300,7 @@ function Action({
 const styles = (t: Theme) =>
   StyleSheet.create({
     screen: { flex: 1, backgroundColor: t.c.bgTertiary },
+    scrollCol: { width: '100%', maxWidth: t.layout.contentMaxW, alignSelf: 'center' },
     head: { paddingHorizontal: t.space.pad, paddingTop: 6, paddingBottom: 14, gap: 4 },
     title: {
       fontFamily: t.fonts.sans, fontSize: t.size.lg, fontWeight: t.weight.bold, color: t.c.txPrimary,
@@ -309,28 +312,33 @@ const styles = (t: Theme) =>
 
     line: { flexDirection: 'row', paddingRight: t.space.pad },
     ln: {
-      fontFamily: t.fonts.mono, fontSize: 12, lineHeight: 19, color: t.c.txTertiary, opacity: 0.6,
-      textAlign: 'right', paddingRight: 10,
+      fontFamily: t.fonts.mono, fontSize: 12, lineHeight: 20, color: t.c.txTertiary, opacity: 0.55,
+      textAlign: 'right', paddingRight: 10, marginRight: 10,
+      borderRightWidth: t.hairline, borderRightColor: t.c.bdTertiary,
+      fontVariant: ['tabular-nums'],
     },
-    code: { flex: 1, fontFamily: t.fonts.mono, fontSize: 12.5, lineHeight: 19, color: t.c.txPrimary },
+    code: { flex: 1, fontFamily: t.fonts.mono, fontSize: 12.5, lineHeight: 20, color: t.c.txPrimary },
 
     none: { alignItems: 'center', gap: 14, paddingTop: 48, paddingHorizontal: 36 },
     noneTile: {
       width: 72, height: 72, borderRadius: 18, alignItems: 'center', justifyContent: 'center',
-      backgroundColor: t.c.bgSecondary,
+      backgroundColor: t.c.bgSecondary, borderWidth: t.hairline, borderColor: t.c.bdTertiary,
     },
     noneTx: { fontFamily: t.fonts.sans, fontSize: t.size.sm, lineHeight: 22, color: t.c.txTertiary, textAlign: 'center' },
 
     actions: {
       position: 'absolute', left: 0, right: 0, bottom: 0, zIndex: t.z.dock,
-      paddingHorizontal: 12, alignItems: 'stretch', gap: 8,
+      paddingHorizontal: 12, alignItems: 'center', gap: 8,
     },
     toast: {
       alignSelf: 'center', overflow: 'hidden',
       fontFamily: t.fonts.sans, fontSize: t.size.xs, color: t.c.txInverse,
       backgroundColor: t.c.bgInverse, borderRadius: t.radius.full, paddingHorizontal: 14, paddingVertical: 7,
     },
-    actInner: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-around', minHeight: 60, paddingVertical: 4 },
+    actInner: {
+      width: '100%', maxWidth: t.layout.contentMaxW,
+      flexDirection: 'row', alignItems: 'center', justifyContent: 'space-around', minHeight: 60, paddingVertical: 4,
+    },
     act: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 3, minHeight: 52, borderRadius: 20 },
-    actTx: { fontFamily: t.fonts.sans, fontSize: 11.5, color: t.c.txSecondary },
+    actTx: { fontFamily: t.fonts.sans, fontSize: 11.5, fontWeight: '500', color: t.c.txSecondary },
   });

@@ -4,9 +4,9 @@ import { useTheme, type Theme } from '@/theme';
 import { useLocale } from '@/i18n';
 import {
   IconClock, IconClose, IconCopy, IconDots, IconExpand, IconFile, IconGlobe, IconImage,
-  IconRight, IconSearch, IconTerm,
+  IconSearch, IconTerm,
 } from '@/icons';
-import { BallSpinner, Tappable } from './ui';
+import { BallSpinner, Chevron, Tappable } from './ui';
 import * as haptics from '@/feedback/haptics';
 import { Markdown } from './markdown';
 import { splitAttachments } from '@/store/attach';
@@ -135,12 +135,14 @@ export function PendingMsg({
         {failed ? (
           <>
             <Text style={s.pendFail}>{error || (isEn ? 'Delivery failed' : '没发出去')}</Text>
-            {onRetry && <Pressable onPress={onRetry} hitSlop={8} accessibilityRole="button">
-              <Text style={s.pendAct}>{isEn ? 'Retry' : '重试'}</Text>
-            </Pressable>}
-            <Pressable onPress={onDrop} hitSlop={8} accessibilityRole="button">
+            {onRetry && (
+              <Tappable style={s.pendPill} onPress={onRetry} haptic={haptics.tap} accessibilityRole="button">
+                <Text style={s.pendAct}>{isEn ? 'Retry' : '重试'}</Text>
+              </Tappable>
+            )}
+            <Tappable style={s.pendPillGhost} onPress={onDrop} haptic={haptics.tap} accessibilityRole="button">
               <Text style={s.pendDrop}>{isEn ? 'Dismiss' : '移除'}</Text>
-            </Pressable>
+            </Tappable>
           </>
         ) : (
           <Text style={s.pendTx} accessibilityLiveRegion="polite">{status ?? '发送中…'}</Text>
@@ -176,8 +178,9 @@ export function FoldLine({
   const s = st(t);
   const color = fail ? t.c.txDanger : t.c.txTertiary;
   return (
-    <Pressable
+    <Tappable
       onPress={onPress}
+      feedback="fill"
       accessibilityRole="button"
       accessibilityState={{ expanded: open }}
       style={s.fold}
@@ -187,7 +190,7 @@ export function FoldLine({
       <Text
         style={[
           s.foldArg,
-          { color, opacity: fail ? 0.8 : 1 },
+          { color, opacity: fail ? 0.85 : 1 },
           !monoArg && { fontFamily: t.fonts.sans, fontSize: t.size.sm },
         ]}
         numberOfLines={1}
@@ -195,10 +198,8 @@ export function FoldLine({
         {arg ?? ''}
       </Text>
       {stat}
-      <View style={[s.chev, open && { transform: [{ rotate: '90deg' }] }]}>
-        <IconRight size={13} color={color} />
-      </View>
-    </Pressable>
+      <Chevron open={open} size={13} color={color} style={s.chev} />
+    </Tappable>
   );
 }
 
@@ -415,12 +416,10 @@ export function TurnSummary({
     // 在跑的时候这一行是进行时——所以这行摘要本身也是活的
     return (
       <>
-        <Pressable style={s.turnSum} onPress={onToggle} accessibilityRole="button">
+        <Tappable style={s.turnSum} feedback="fill" onPress={onToggle} accessibilityRole="button" accessibilityState={{ expanded: open }}>
           <Text style={s.turnSumTx} numberOfLines={1}>{liveLabel(steps)}</Text>
-          <View style={[s.chev, open && { transform: [{ rotate: '90deg' }] }]}>
-            <IconRight size={13} color={t.c.txSecondary} />
-          </View>
-        </Pressable>
+          <Chevron open={open} size={13} color={t.c.txSecondary} style={s.chev} />
+        </Tappable>
         {open ? children : null}
       </>
     );
@@ -431,15 +430,13 @@ export function TurnSummary({
 
   return (
     <>
-      <Pressable style={s.turnSum} onPress={onToggle} accessibilityRole="button">
+      <Tappable style={s.turnSum} feedback="fill" onPress={onToggle} accessibilityRole="button" accessibilityState={{ expanded: open }}>
         <Text style={s.turnSumTx} numberOfLines={1}>{summarize(pairs)}</Text>
         {/* 失败标记放在不参与截断的位置——它是最该跳出来的信息，
             塞进会省略的文本里等于第一个被吃掉 */}
         {failed ? <Text style={s.statFail}>有失败</Text> : null}
-        <View style={[s.chev, open && { transform: [{ rotate: '90deg' }] }]}>
-          <IconRight size={13} color={t.c.txSecondary} />
-        </View>
-      </Pressable>
+        <Chevron open={open} size={13} color={t.c.txSecondary} style={s.chev} />
+      </Tappable>
       {open ? children : null}
     </>
   );
@@ -655,11 +652,14 @@ export const st = (t: Theme) =>
   StyleSheet.create({
     msgUser: {
       flexDirection: 'row', justifyContent: 'flex-end',
-      paddingHorizontal: t.space.pad, paddingTop: 16, paddingBottom: 2,
+      paddingHorizontal: t.space.pad, paddingTop: 18, paddingBottom: 3,
     },
     bubble: {
-      maxWidth: '79%', backgroundColor: t.c.bgSecondary, borderRadius: 22,
-      paddingHorizontal: 18, paddingVertical: 13,
+      maxWidth: '82%', backgroundColor: t.c.bgSecondary,
+      borderRadius: 20, borderBottomRightRadius: 6,
+      borderWidth: t.hairline,
+      borderColor: t.isDark ? 'rgba(255,255,255,0.08)' : 'rgba(34,33,31,0.05)',
+      paddingHorizontal: 16, paddingVertical: 12,
     },
     bubbleTx: { fontSize: t.size.md, lineHeight: 24, color: t.c.txPrimary, fontFamily: t.fonts.sans },
     msgFrom: {
@@ -669,47 +669,62 @@ export const st = (t: Theme) =>
 
     // 状态行跟着气泡右对齐，和「从手机发的」同一条基线上
     pendRow: {
-      flexDirection: 'row', justifyContent: 'flex-end', alignItems: 'center',
-      gap: 12, paddingHorizontal: t.space.pad, paddingTop: 5,
+      flexDirection: 'row', justifyContent: 'flex-end', alignItems: 'center', flexWrap: 'wrap',
+      gap: 8, paddingHorizontal: t.space.pad, paddingTop: 6,
     },
     pendTx: { fontSize: 11.5, color: t.c.txTertiary, fontFamily: t.fonts.sans },
-    pendFail: { fontSize: 11.5, color: t.c.txDanger, fontFamily: t.fonts.sans, flexShrink: 1 },
+    pendFail: { fontSize: 12, color: t.c.txDanger, fontFamily: t.fonts.sans, flexShrink: 1 },
+    pendPill: {
+      paddingHorizontal: 11, paddingVertical: 5, minHeight: 32,
+      borderRadius: t.radius.full, backgroundColor: t.c.bgSecondary,
+      borderWidth: t.hairline, borderColor: t.c.bdTertiary,
+      justifyContent: 'center', alignItems: 'center',
+    },
+    pendPillGhost: {
+      paddingHorizontal: 10, paddingVertical: 5, minHeight: 32,
+      borderRadius: t.radius.full, justifyContent: 'center', alignItems: 'center',
+    },
     // 重试是主动作，给它正文色；「不发了」是破坏性的，退到次要色，不上红——
     // 红色留给"出错了"，不该同时表示"这个按钮很危险"
-    pendAct: { fontSize: 11.5, color: t.c.txPrimary, fontFamily: t.fonts.sans, fontWeight: t.weight.bold },
-    pendDrop: { fontSize: 11.5, color: t.c.txTertiary, fontFamily: t.fonts.sans },
+    pendAct: { fontSize: 12, color: t.c.txPrimary, fontFamily: t.fonts.sans, fontWeight: t.weight.bold },
+    pendDrop: { fontSize: 12, color: t.c.txTertiary, fontFamily: t.fonts.sans },
 
-    msgText: { paddingHorizontal: t.space.pad, paddingTop: 2, paddingBottom: 10 },
+    msgText: { paddingHorizontal: t.space.pad, paddingTop: 4, paddingBottom: 10 },
     para: {
       fontFamily: t.fonts.serif, fontSize: 17, lineHeight: 27.5,
       color: t.c.txPrimary, marginBottom: 11,
     },
 
     fold: {
-      flexDirection: 'row', alignItems: 'center', gap: 7,
-      marginHorizontal: t.space.pad, marginVertical: 6,
-      paddingVertical: 5, minHeight: 34,
+      flexDirection: 'row', alignItems: 'center', gap: 8,
+      marginHorizontal: t.space.pad - 6, marginVertical: 3,
+      paddingHorizontal: 8, paddingVertical: 7, minHeight: 38,
+      borderRadius: t.radius.md,
     },
     foldIc: { width: 15, height: 15 },
-    foldLabel: { fontSize: t.size.sm, fontFamily: t.fonts.sans },
+    foldLabel: { fontSize: t.size.sm, fontFamily: t.fonts.sans, fontWeight: '500' },
     foldArg: { flex: 1, fontFamily: t.fonts.mono, fontSize: 12.5, minWidth: 0 },
     chev: { width: 13, height: 13, opacity: 0.7 },
 
     turnSum: {
       flexDirection: 'row', alignItems: 'center', gap: 8,
-      marginHorizontal: t.space.pad, marginVertical: 8,
-      paddingVertical: 5, minHeight: 36,
+      marginHorizontal: t.space.pad, marginVertical: 6,
+      paddingHorizontal: 12, paddingVertical: 9, minHeight: 40,
+      borderRadius: t.radius.lg,
+      backgroundColor: t.isDark ? 'rgba(255,255,255,0.02)' : 'rgba(34,33,31,0.03)',
+      borderWidth: t.hairline, borderColor: t.c.bdTertiary,
     },
-    turnSumTx: { flex: 1, fontSize: t.size.sm, color: t.c.txSecondary, fontFamily: t.fonts.sans },
-    statFail: { color: t.c.txDanger, fontWeight: t.weight.bold, fontSize: t.size.sm, fontFamily: t.fonts.sans },
+    turnSumTx: { flex: 1, fontSize: 13.5, color: t.c.txSecondary, fontFamily: t.fonts.sans },
+    statFail: { color: t.c.txDanger, fontWeight: t.weight.bold, fontSize: 13, fontFamily: t.fonts.sans },
 
     foldBody: { paddingHorizontal: t.space.pad, paddingBottom: 10 },
     think: {
-      fontFamily: t.fonts.serif, fontSize: 15.5, lineHeight: 25,
-      color: t.c.txTertiary, paddingLeft: 22, paddingTop: 2,
+      fontFamily: t.fonts.serif, fontSize: 15, lineHeight: 24.5,
+      color: t.c.txTertiary, paddingLeft: 20, paddingTop: 4,
     },
     out: {
-      marginLeft: 22, backgroundColor: t.c.bgSecondary, borderRadius: t.radius.lg,
+      marginLeft: 18, backgroundColor: t.c.bgSecondary, borderRadius: t.radius.lg,
+      borderWidth: t.hairline, borderColor: t.c.bdTertiary,
       paddingVertical: 10, paddingLeft: 12, overflow: 'hidden',
     },
     raw: { fontFamily: t.fonts.mono, fontSize: 12.5, lineHeight: 19.4, color: t.c.txSecondary },

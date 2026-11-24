@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
-import { Animated, Easing, Modal, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Animated, Easing, Modal, Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 import { useTheme, type Theme } from '@/theme';
 import { IconBranch, IconFile, IconLines, IconRefresh, IconTick } from '@/icons';
-import { Glass, useNativeGlass } from './Glass';
+import { Glass, useGlassPath } from './Glass';
 import { Tappable, useFloatBarHeight, FLOAT_BAR_X } from './ui';
 import { useReduceMotion } from '@/a11y/motion';
 import * as haptics from '@/feedback/haptics';
@@ -63,7 +63,9 @@ export function SessionMenu({
   const s = sm(t);
   const { isEn, en, trNew } = useLocale();
   const top = useFloatBarHeight();
-  const native = useNativeGlass();
+  const { width: winW } = useWindowDimensions();
+  const right = Math.max(FLOAT_BAR_X, Math.round(((winW || 390) - t.layout.contentMaxW) / 2));
+  const glassPath = useGlassPath();
   const reduceMotion = useReduceMotion();
   const viewNames: Record<View3, string> = isEn
     ? { summary: en('view.summary'), normal: en('view.normal'), verbose: en('view.verbose') }
@@ -106,7 +108,7 @@ export function SessionMenu({
       <Animated.View
         style={[
           s.card,
-          { top, right: FLOAT_BAR_X },
+          { top, right },
           {
             opacity: v,
             transform: [
@@ -118,9 +120,8 @@ export function SessionMenu({
           },
         ]}
       >
-        {/* 阴影只在没有原生玻璃时补：Liquid Glass 自带景深，再叠一层是重复。
-            不补的话这张卡片压在白底内容上几乎看不出边（和 Fab 同一条规矩）。 */}
-        <Glass radius={RADIUS} style={[s.glass, !native && t.shadow]}>
+        {/* 阴影只在 opaque 兜底路径补：native 自带景深，web 已有 Glass.webChrome() 阴影与描边。 */}
+        <Glass radius={RADIUS} style={[s.glass, glassPath === 'opaque' && t.shadow]}>
           {page === 'main' ? (
             <>
               {related > 1 ? (

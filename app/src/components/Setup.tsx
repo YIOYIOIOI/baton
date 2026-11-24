@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Dimensions, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ScrollView, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 import { useTheme, type Theme } from '@/theme';
 import { PillSelect, Sheet, SheetP, Tappable } from './ui';
 import { DetailRow, GroupH, SelectList, type Option } from './SelectList';
@@ -41,9 +41,6 @@ import type { Agent, AgentConfig, Effort, ModelOption, PermissionMode } from '@/
 
 const AGENT_ITEMS = [['claude', 'Claude'], ['codex', 'Codex'], ['antigravity', 'Antigravity']] as const;
 
-/** sheet 的左右内边距是 t.space.pad（18），两边各一次。 */
-const SHEET_W = Dimensions.get('window').width - 36;
-
 /** 1000000 → 「100 万」。原样打一串零没人读得出量级。 */
 function fmtTokens(n: number): string {
   if (n >= 10000) return `${Math.round(n / 10000)} 万 token`;
@@ -59,7 +56,7 @@ type Page = 'main' | 'model' | 'moreModels' | 'effort' | 'perm';
 
 export function SetupPill({
   agent, onAgent, model, modelOptions, onModel, onOpenModels, effort, onEffort,
-  config = { effort: null, contextWindow: null }, width = SHEET_W, readOnlyPreferences = false,
+  config = { effort: null, contextWindow: null }, width, readOnlyPreferences = false,
 }: {
   agent: Agent;
   /** 不传 = 这一屏不能换 agent（会话已经建在某个 agent 上了，换不了）。 */
@@ -86,6 +83,8 @@ export function SetupPill({
 }) {
   const t = useTheme();
   const s = styles(t);
+  const { width: winW } = useWindowDimensions();
+  const sheetW = width ?? Math.max(220, Math.min(winW || 390, t.layout.sheetMaxW) - t.space.pad * 2 - 2);
   const { isEn } = useLocale();
   const client = useConnection((c) => c.client);
   const perm = usePermission();
@@ -202,7 +201,7 @@ export function SetupPill({
                       // 一定跑不起来，而留着比清掉更糟——用户看见一个选中的值，
                       // 会以为它有效。权限不用清，它本来就是按 agent 存的。
                       onChange={(a) => { onAgent(a); onModel(null); onEffort(null); }}
-                      width={width - 6}
+                      width={sheetW}
                     />
                   </View>
                 </>

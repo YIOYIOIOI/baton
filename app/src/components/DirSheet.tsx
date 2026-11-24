@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Platform, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useTheme, type Theme } from '@/theme';
 import { IconPlus, IconRight, IconTick } from '@/icons';
 import { Chip, Sheet, SheetP, Tappable } from './ui';
@@ -54,6 +54,7 @@ export function DirSheet({
   const [allowSend, setAllowSend] = useState<boolean | null>(null);
   const [naming, setNaming] = useState(false);
   const [name, setName] = useState('');
+  const [inputFocus, setInputFocus] = useState(false);
 
   const load = useCallback(async (path: string | null) => {
     if (!client) return;
@@ -149,9 +150,11 @@ export function DirSheet({
           {naming ? (
             <View style={s.nameRow}>
               <TextInput
-                style={s.input}
+                style={[s.input, inputFocus && s.inputFocus]}
                 value={name}
                 onChangeText={setName}
+                onFocus={() => setInputFocus(true)}
+                onBlur={() => setInputFocus(false)}
                 onSubmitEditing={create}
                 placeholder="文件夹名"
                 placeholderTextColor={t.c.txTertiary}
@@ -254,7 +257,7 @@ const styles = (t: Theme) =>
   StyleSheet.create({
     bar: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 10 },
     up: {
-      width: 34, height: 34, borderRadius: t.radius.full,
+      width: 40, height: 40, borderRadius: t.radius.full,
       alignItems: 'center', justifyContent: 'center', backgroundColor: t.c.bgSecondary,
     },
     // 图标库里只有向右的箭头，转 180° 当返回用，不为这一处再描一个
@@ -299,7 +302,12 @@ const styles = (t: Theme) =>
     input: {
       flex: 1, minHeight: t.space.tap, paddingHorizontal: 14,
       borderRadius: t.radius.full, backgroundColor: t.c.bgSecondary,
-      fontFamily: t.fonts.sans, fontSize: t.size.sm, color: t.c.txPrimary,
+      borderWidth: 1, borderColor: 'transparent',
+      fontFamily: t.fonts.sans, fontSize: 16, color: t.c.txPrimary,
+      ...(Platform.OS === 'web' ? { outlineStyle: 'none' as never } : null),
+    },
+    inputFocus: {
+      borderColor: t.c.coral,
     },
 
     warn: {

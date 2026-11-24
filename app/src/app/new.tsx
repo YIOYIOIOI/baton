@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 import {
-  KeyboardAvoidingView, Platform, ScrollView, StyleSheet, Text,
+  KeyboardAvoidingView, Platform, ScrollView, StyleSheet, Text, View,
 } from 'react-native';
 import { Stack, useRouter } from 'expo-router';
 import { useTheme, type Theme } from '@/theme';
 import { IconBall } from '@/icons';
 import { FloatBar, useFloatBarHeight } from '@/components/ui';
+import { ScrollEdge } from '@/components/ScrollEdge';
 import { DirSheet } from '@/components/DirSheet';
 import { SetupPill } from '@/components/Setup';
 import { Composer, PillSelect } from '@/components/Composer';
@@ -191,6 +192,7 @@ export default function NewScreen() {
           : isEn ? 'Checking whether Antigravity Desktop created your session…' : '正在核对 Antigravity 桌面端是否已建好会话…'}</Text>
         <Text selectable style={{ color: t.c.txTertiary }}>{isEn ? 'Request' : '查询编号'} {receipt.turnId}</Text>
       </ScrollView>
+      <ScrollEdge height={barH} />
       <FloatBar onBack={() => router.back()} />
     </KeyboardAvoidingView>
   );
@@ -199,18 +201,22 @@ export default function NewScreen() {
       <Stack.Screen options={{ headerShown: false }} />
 
       <ScrollView contentContainerStyle={[s.hero, { paddingTop: barH }]}>
-        <IconBall size={26} color={t.c.coral} />
+        <View style={s.heroMark}>
+          <IconBall size={28} color={t.c.coral} />
+        </View>
         <Text style={s.h1}>{greet}</Text>
       </ScrollView>
 
       {err ? (
-        <Blocked
-          title={err.msg}
-          fix={err.fix}
-          // 只有「目录不存在」这一条能就地补救。越界（cwd_not_allowed）给按钮是
-          // 骗人：建了也还是越界，服务端照样拒。
-          action={err.code === 'cwd_not_found' ? { label: isEn ? en('new.createDir') : '建一个', onPress: makeAndGo } : undefined}
-        />
+        <View style={s.col}>
+          <Blocked
+            title={err.msg}
+            fix={err.fix}
+            // 只有「目录不存在」这一条能就地补救。越界（cwd_not_allowed）给按钮是
+            // 骗人：建了也还是越界，服务端照样拒。
+            action={err.code === 'cwd_not_found' ? { label: isEn ? en('new.createDir') : '建一个', onPress: makeAndGo } : undefined}
+          />
+        </View>
       ) : null}
 
       <Composer
@@ -266,6 +272,7 @@ export default function NewScreen() {
         }
       />
 
+      <ScrollEdge height={barH} />
       <FloatBar onBack={() => router.back()} />
 
       {/* 原生那张「拍照 / 照片 / 文件」卡片。网页端不弹它，系统自己会问 */}
@@ -306,9 +313,18 @@ function dirName(cwd: string): string {
 const styles = (t: Theme) =>
   StyleSheet.create({
     screen: { flex: 1, backgroundColor: t.c.bgTertiary },
+    col: { width: '100%', maxWidth: t.layout.contentMaxW, alignSelf: 'center' },
     hero: {
       flexGrow: 1, alignItems: 'center', justifyContent: 'center',
-      gap: 14, paddingHorizontal: t.space.pad, paddingBottom: 70,
+      gap: 16, paddingHorizontal: t.space.pad, paddingBottom: 70,
+      width: '100%', maxWidth: t.layout.contentMaxW, alignSelf: 'center',
     },
-    h1: { fontFamily: t.fonts.serif, fontSize: 26, letterSpacing: -0.3, color: t.c.txPrimary },
+    heroMark: {
+      width: 58, height: 58, borderRadius: t.radius.full,
+      backgroundColor: t.c.accentSoft,
+      borderWidth: t.hairline,
+      borderColor: t.isDark ? 'rgba(92,130,255,0.22)' : 'rgba(36,85,255,0.14)',
+      alignItems: 'center', justifyContent: 'center',
+    },
+    h1: { fontFamily: t.fonts.serif, fontSize: 28, letterSpacing: -0.4, color: t.c.txPrimary },
   });

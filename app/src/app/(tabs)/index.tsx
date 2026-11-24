@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Animated, AppState, Dimensions, LayoutAnimation, Platform, RefreshControl, ScrollView, StyleSheet, Text, View,
+  Animated, AppState, LayoutAnimation, Platform, RefreshControl, ScrollView, StyleSheet, Text,
+  useWindowDimensions, View,
 } from 'react-native';
 import { Redirect, Stack, useRouter } from 'expo-router';
 
@@ -49,17 +50,6 @@ const SLIDE_PX = 28;
 /** 提到组件外：每次渲染新建一个数组会让 Segmented 白白重渲染。 */
 const AGENT_TABS_ZH = [['all', '全部'], ['claude', 'Claude'], ['codex', 'Codex'], ['antigravity', 'AGY']] as const;
 const AGENT_TABS_EN = [['all', 'All'], ['claude', 'Claude'], ['codex', 'Codex'], ['antigravity', 'AGY']] as const;
-
-/**
- * 切换条的宽度 = 屏宽 − 两侧页边距。
- *
- * 直接算而不是量：onLayout 要先渲染一次拿到 0、再渲染一次拿到真值，
- * 而 App 锁竖屏（app.json 的 orientation: portrait），屏宽是个定值。
- *
- * 原来还要再减 6——那是旧的自绘实现里「玻璃那圈 padding」，实现换成系统控件
- * 之后那圈不存在了，跟着去掉。
- */
-const TRACK_W = Dimensions.get('window').width - space.pad * 2;
 
 /**
  * 折叠 / 展开一组时，下面的行**滑开**而不是瞬间跳到新位置。
@@ -137,6 +127,8 @@ export default function ListScreen() {
   // 网页端同源时浏览器会自动带 cookie，那条 cookie 可能是更早的客户端留下的。
   const [authed, setAuthed] = useState<boolean | null>(null);
   const barH = useFloatBarHeight();
+  const { width: winW } = useWindowDimensions();
+  const trackW = Math.max(220, Math.min(winW || 390, t.layout.contentMaxW) - space.pad * 2);
 
 
   const load = useCallback(async () => {
@@ -193,7 +185,11 @@ export default function ListScreen() {
       <Stack.Screen options={{ headerShown: false }} />
 
       {/* 传输轴出问题时，阻断条顶在浮动按钮下方，滚动区就不再自己留顶部空间 */}
-      {link !== 'ok' ? <View style={{ paddingTop: barH - 4 }}><Notice link={link} onAction={load} /></View> : null}
+      {link !== 'ok' ? (
+        <View style={{ paddingTop: barH + 4, width: '100%', maxWidth: t.layout.contentMaxW, alignSelf: 'center' }}>
+          <Notice link={link} onAction={load} />
+        </View>
+      ) : null}
 
       <ScrollView
         style={s.scrollView}
@@ -224,7 +220,7 @@ export default function ListScreen() {
               动作，比这行字有用。
             */}
             <View style={s.tabsWrap}>
-              <Segmented width={TRACK_W} items={tabs} value={agent} onChange={setAgent} />
+              <Segmented width={trackW} items={tabs} value={agent} onChange={setAgent} />
             </View>
 
             {/*
@@ -237,10 +233,11 @@ export default function ListScreen() {
               会撑出横向溢出。配合淡入，读起来是「这批内容是从那边来的」。
             */}
             <Animated.View style={[s.pager, { transform: [{ translateX: slide }], opacity: fade }]}>
-            {groups.map((g) => {
+            {groups.map((g, gi) => {
               const open = !folded.has(g.key);
               return (
                 <View key={g.key}>
+                  {gi > 0 ? <View style={s.groupDivider} /> : null}
                   <Tappable
                     style={s.groupHead}
                     onPress={() => {
@@ -258,9 +255,11 @@ export default function ListScreen() {
                   >
                     <Chevron open={open} style={s.chev} />
                     <Text style={s.groupName} numberOfLines={1}>{g.name}</Text>
-                    <Text style={[s.groupN, g.running > 0 && { color: t.c.coral, opacity: 1 }]}>
-                      {g.rows.length}
-                    </Text>
+                    <View style={[s.groupCountPill, g.running > 0 && { backgroundColor: t.c.accentSoft }]}>
+                      <Text style={[s.groupN, g.running > 0 && { color: t.c.coral, fontWeight: t.weight.bold }]}>
+                        {g.rows.length}
+                      </Text>
+                    </View>
                   </Tappable>
                   {open ? g.rows.map(({ member, fork }) => (
                     <Row
@@ -371,14 +370,22 @@ function Row({ member: m, fork, onPress }: { member: Member; fork: boolean; onPr
         {kind === 'running'
           ? <Pulse style={[s.rowDot, { backgroundColor: t.c.coral }]} />
           : kind === 'waiting'
-            ? <View style={[s.rowDot, { backgroundColor: t.c.txWarning }]} />
+            ? (
+              <View style={s.rowDotWaitRing}>
+                <View style={[s.rowDot, { backgroundColor: t.c.txWarning }]} />
+              </View>
+            )
             : <View style={[s.rowDot, s.rowDotIdle]} />}
       </View>
       <Text style={[s.rowTitle, dim && { color: t.c.txTertiary }]} numberOfLines={1}>
         {m.title}
       </Text>
       {/* 分叉是从别的会话分出来的一条。标在右边、很淡——它是出身，不是状态 */}
-      {fork ? <Text style={s.rowFork}>{isEn ? en('list.fork') : '分叉'}</Text> : null}
+      {fork ? (
+        <View style={s.rowForkPill}>
+          <Text style={s.rowFork}>{isEn ? en('list.fork') : '分叉'}</Text>
+        </View>
+      ) : null}
     </Tappable>
   );
 }
@@ -391,7 +398,12 @@ const styles = (t: Theme) =>
     screen: { flex: 1, backgroundColor: t.c.bgTertiary },
     scrollView: { flex: 1 },
     // paddingTop 由组件按浮动栏实际高度行内给，这里给了也会被盖掉
-    scroll: { paddingBottom: 8 },
+    scroll: {
+      paddingBottom: 16,
+      width: '100%',
+      maxWidth: t.layout.contentMaxW,
+      alignSelf: 'center',
+    },
 
     /**
      * 换筛选时横移的那一层。**必须裁**——不裁的话横移会撑出横向溢出，
@@ -400,44 +412,70 @@ const styles = (t: Theme) =>
      * 裁在这里是安全的：分段控件在 tabsWrap 里，是这一层的**兄弟**不是子元素，
      * 所以胶囊胀大时鼓出来的那圈不会被这层切掉（那条规矩见 Segmented 抬头）。
      */
-    pager: { overflow: 'hidden' },
+    pager: { overflow: 'hidden', paddingTop: 4 },
 
     // 轨道、滑块、文字的样式都在 Segmented 里，这儿只管它占多大位置
-    tabsWrap: { paddingHorizontal: t.space.pad, paddingTop: 8, paddingBottom: 6 },
+    tabsWrap: { paddingHorizontal: t.space.pad, paddingTop: 8, paddingBottom: 8 },
 
+    groupDivider: {
+      height: t.hairline,
+      backgroundColor: t.c.bdTertiary,
+      marginHorizontal: t.space.pad,
+      marginTop: 10,
+      marginBottom: 4,
+    },
     groupHead: {
       flexDirection: 'row', alignItems: 'center', gap: 7,
-      paddingHorizontal: t.space.pad, paddingTop: 13, paddingBottom: 4, minHeight: 38,
+      marginHorizontal: 8, paddingHorizontal: 10, paddingTop: 10, paddingBottom: 6,
+      minHeight: 40, borderRadius: t.radius.lg,
     },
     chev: { width: 12, height: 12, opacity: 0.6 },
     groupName: {
-      flex: 1, fontFamily: t.fonts.mono, fontSize: 12.5, color: t.c.txTertiary,
+      flex: 1, fontFamily: t.fonts.mono, fontSize: 12, fontWeight: '500',
+      letterSpacing: 0.2, color: t.c.txTertiary,
     },
-    groupN: { fontFamily: t.fonts.sans, fontSize: 12.5, color: t.c.txTertiary, opacity: 0.7 },
+    groupCountPill: {
+      minWidth: 22, height: 20, paddingHorizontal: 7, borderRadius: t.radius.full,
+      backgroundColor: t.c.bgSecondary, alignItems: 'center', justifyContent: 'center',
+    },
+    groupN: {
+      fontFamily: t.fonts.sans, fontSize: 11.5, color: t.c.txTertiary,
+      fontVariant: ['tabular-nums'],
+    },
 
     row: {
-      flexDirection: 'row', alignItems: 'center', gap: 8,
-      paddingHorizontal: t.space.pad, paddingVertical: 10,
+      flexDirection: 'row', alignItems: 'center', gap: 10,
+      marginHorizontal: 8, paddingHorizontal: 10, paddingVertical: 11,
+      minHeight: 48, borderRadius: t.radius.lg,
     },
-    rowDotSlot: { width: 16, alignItems: 'flex-start', paddingLeft: 3 },
+    rowDotSlot: { width: 18, alignItems: 'center', justifyContent: 'center' },
     rowDot: { width: 8, height: 8, borderRadius: t.radius.full },
-    rowDotIdle: {
-      borderWidth: 1.2, borderColor: t.c.txTertiary, opacity: 0.5, backgroundColor: 'transparent',
+    rowDotWaitRing: {
+      width: 16, height: 16, borderRadius: t.radius.full,
+      backgroundColor: t.c.bgWarning, alignItems: 'center', justifyContent: 'center',
     },
-    rowTitle: { flex: 1, fontSize: t.size.md, lineHeight: 22, color: t.c.txPrimary, fontFamily: t.fonts.sans },
+    rowDotIdle: {
+      borderWidth: 1.4, borderColor: t.c.txTertiary, opacity: 0.45, backgroundColor: 'transparent',
+    },
+    rowTitle: {
+      flex: 1, fontSize: 15.5, lineHeight: 22, letterSpacing: -0.1,
+      color: t.c.txPrimary, fontFamily: t.fonts.sans,
+    },
     // 很淡、很小：它是出身不是状态，不能和在跑的那颗点抢眼
-    rowFork: { fontSize: t.size.xs, color: t.c.txTertiary, fontFamily: t.fonts.sans, opacity: 0.8 },
+    rowForkPill: {
+      paddingHorizontal: 7, paddingVertical: 2, borderRadius: t.radius.full,
+      backgroundColor: t.c.bgSecondary,
+    },
+    rowFork: { fontSize: 11, color: t.c.txTertiary, fontFamily: t.fonts.sans, fontWeight: '500' },
 
     archive: {
       flexDirection: 'row', alignItems: 'center', gap: 9,
-      paddingHorizontal: t.space.pad, paddingVertical: 14, marginTop: 8,
+      marginHorizontal: 8, paddingHorizontal: 10, paddingVertical: 13,
+      marginTop: 14, minHeight: 46, borderRadius: t.radius.lg,
     },
     archiveTx: { flex: 1, color: t.c.txSecondary, fontSize: t.size.sm, fontFamily: t.fonts.sans },
 
-    // 只是个定位容器，自己没有底色——底色在里面那两块玻璃上
-
-
-    empty: { paddingTop: 80, paddingHorizontal: t.space.pad, alignItems: 'center', gap: 4 },
+    empty: { paddingTop: 88, paddingHorizontal: t.space.pad, alignItems: 'center', gap: 6 },
     emptyB: { fontFamily: t.fonts.serif, fontSize: 22, marginTop: 10, color: t.c.txPrimary },
     emptyP: { color: t.c.txTertiary, fontSize: t.size.sm, lineHeight: 24, marginBottom: 20, textAlign: 'center', fontFamily: t.fonts.sans },
   });

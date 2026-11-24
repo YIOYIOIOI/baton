@@ -1,7 +1,7 @@
-import { createElement, useRef } from 'react';
+import { createElement, useRef, useState } from 'react';
 import {
   ActivityIndicator, Platform, ScrollView, StyleSheet, TextInput, useWindowDimensions, View,
-  type TextStyle,
+  type NativeSyntheticEvent, type TextInputKeyPressEventData, type TextStyle, type ViewStyle,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme, type Theme } from '@/theme';
@@ -86,6 +86,7 @@ export function Composer({
   const s = cp(t);
   // 底部避开 Home 指示条，否则最后一行按钮会被上滑手势区盖住
   const inset = useSafeAreaInsets();
+  const [focused, setFocused] = useState(false);
   // 量加号的位置用。collapsable={false} 不能省：RN 会把没有样式的纯容器 View
   // 在原生层折叠掉，折叠掉的节点 measureInWindow 拿不到东西
   const plusRef = useRef<View>(null);
@@ -103,16 +104,40 @@ export function Composer({
   const inputMax = Math.max(88, Math.round(useWindowDimensions().height * 0.3));
   const canSend = (!!value.trim() || !!hasAttachments) && !sending && !disabled;
 
+  const onKeyPress = Platform.OS === 'web'
+    ? (e: NativeSyntheticEvent<TextInputKeyPressEventData>) => {
+      const ev = e.nativeEvent as TextInputKeyPressEventData & {
+        metaKey?: boolean; ctrlKey?: boolean; isComposing?: boolean; keyCode?: number; repeat?: boolean;
+      };
+      if (ev.isComposing || ev.keyCode === 229 || ev.repeat) return;
+      if ((ev.metaKey || ev.ctrlKey) && ev.key === 'Enter') {
+        e.preventDefault();
+        if (canSend) onSend();
+      }
+    }
+    : undefined;
+
   return (
     // max 而不是加法：inset.bottom 本身就是「避开 Home 指示条所需的余量」，
     // 再加 10 是重复计算——真机上变成 44pt 的空档，看着就是底部一大片空白。
     // 没有指示条的机型 inset 为 0，这时才用 10 兜底。
-    <Glass radius={26} style={[s.composer, { marginBottom: Math.max(10, inset.bottom) }]}>
+    <View style={s.outer} pointerEvents="box-none">
+    <Glass
+      radius={26}
+      style={[
+        s.composer,
+        focused && s.composerFocus,
+        { marginBottom: Math.max(10, inset.bottom) },
+      ]}
+    >
       {above}
       <TextInput
         style={[s.input, NO_OUTLINE, { maxHeight: inputMax }, disabled && { color: t.c.txTertiary }]}
         value={value}
         onChangeText={onChange}
+        onFocus={() => setFocused(true)}
+        onBlur={() => setFocused(false)}
+        onKeyPress={onKeyPress}
         onSelectionChange={onCaret ? (e) => onCaret(e.nativeEvent.selection.start) : undefined}
         selection={selection}
         placeholder={placeholder}
@@ -256,6 +281,7 @@ export function Composer({
         )}
       </View>
     </Glass>
+    </View>
   );
 }
 
@@ -291,10 +317,32 @@ export { PillSelect };
 
 const cp = (t: Theme) =>
   StyleSheet.create({
+    outer: {
+      width: '100%',
+      maxWidth: t.layout.contentMaxW,
+      alignSelf: 'center',
+    },
     // 底色交给 Glass；输入区浮在会话流之上，用玻璃才有层次
     composer: {
       marginHorizontal: 12, marginBottom: 10, borderRadius: 26,
       paddingHorizontal: 14, paddingTop: 12, paddingBottom: 9,
+      ...(Platform.OS === 'web'
+        ? ({
+          transitionProperty: 'border-color, box-shadow',
+          transitionDuration: '160ms',
+          transitionTimingFunction: 'cubic-bezier(0.23, 1, 0.32, 1)',
+        } as unknown as ViewStyle)
+        : null),
+    },
+    composerFocus: {
+      borderColor: t.isDark ? 'rgba(92,130,255,0.48)' : 'rgba(36,85,255,0.32)',
+      ...(Platform.OS === 'web'
+        ? ({
+          boxShadow: t.isDark
+            ? '0 10px 30px -8px rgba(0,0,0,0.68), 0 0 0 3px rgba(92,130,255,0.16), inset 0 1px 0 rgba(255,255,255,0.12)'
+            : '0 8px 26px -6px rgba(22,22,28,0.13), 0 0 0 3px rgba(36,85,255,0.10), inset 0 1px 0 rgba(255,255,255,0.95)',
+        } as unknown as ViewStyle)
+        : null),
     },
     input: {
       // maxHeight 在组件里按屏高算，见 inputMax

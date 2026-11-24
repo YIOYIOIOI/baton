@@ -570,8 +570,8 @@ const styles = (t: Theme) =>
     },
     badgeTx: { fontFamily: t.fonts.sans, fontSize: 11, fontWeight: t.weight.bold, color: t.c.txSecondary },
     revokeBtn: {
-      paddingHorizontal: 12, paddingVertical: 6, minHeight: 34,
-      borderRadius: t.radius.full, backgroundColor: t.c.bgSecondary,
+      paddingHorizontal: 13, paddingVertical: 7, minHeight: 36,
+      borderRadius: t.radius.full, backgroundColor: t.c.bgDanger,
       justifyContent: 'center', alignItems: 'center',
     },
     revokeTx: { fontFamily: t.fonts.sans, fontSize: t.size.xs, fontWeight: t.weight.bold, color: t.c.txDanger },
@@ -590,19 +590,28 @@ const styles = (t: Theme) =>
     },
     // 分组列表的页底。见 tokens 里 bgGrouped 的注释
     screen: { flex: 1, backgroundColor: t.c.bgGrouped },
-    scroll: { paddingBottom: 40 },
+    scroll: {
+      paddingBottom: 40,
+      width: '100%',
+      maxWidth: t.layout.contentMaxW,
+      alignSelf: 'center',
+    },
 
     group: { paddingHorizontal: t.space.pad, paddingTop: 22 },
     groupLabel: {
       fontFamily: t.fonts.sans, fontSize: 12, fontWeight: t.weight.bold,
-      letterSpacing: 0.8, color: t.c.txTertiary,
-      paddingLeft: 2, paddingBottom: 8, textTransform: 'uppercase',
+      letterSpacing: 0.7, color: t.c.txTertiary,
+      paddingLeft: 4, paddingBottom: 8, textTransform: 'uppercase',
     },
-    // **不描边**：grouped 列表靠卡片与页底的明度差分层，描边是 plain 列表
-    // 在白底上不得已的补救。灰底白卡之后那道线只会显脏。
+    // 分组卡片：浅色靠极轻投影 + 明度差浮在灰底上，深色靠顶面极细边线界定轮廓
     card: {
       backgroundColor: t.c.bgPrimary, borderRadius: t.radius.xl,
-      paddingHorizontal: 15, overflow: 'hidden',
+      paddingHorizontal: 16, overflow: 'hidden',
+      ...(t.isDark
+        ? { borderWidth: t.hairline, borderColor: 'rgba(255,255,255,0.07)' }
+        : Platform.OS === 'web'
+          ? { boxShadow: '0 1px 3px rgba(22,22,28,0.04), 0 0 0 1px rgba(34,33,31,0.035)' } as never
+          : null),
     },
     row: {
       flexDirection: 'row', alignItems: 'center', gap: 12,
@@ -620,9 +629,14 @@ const styles = (t: Theme) =>
     // 破坏性动作在 iOS 上是**单独一张卡、红字居中**，不是一个描边按钮
     danger: {
       marginHorizontal: t.space.pad, marginTop: 28,
-      minHeight: t.space.tap + 6, borderRadius: t.radius.xl,
+      minHeight: t.space.tap + 8, borderRadius: t.radius.xl,
       backgroundColor: t.c.bgPrimary,
       alignItems: 'center', justifyContent: 'center',
+      ...(t.isDark
+        ? { borderWidth: t.hairline, borderColor: 'rgba(242,131,111,0.22)' }
+        : Platform.OS === 'web'
+          ? { boxShadow: '0 1px 3px rgba(22,22,28,0.04), 0 0 0 1px rgba(179,38,30,0.08)' } as never
+          : null),
     },
     dangerTx: {
       fontFamily: t.fonts.sans, fontSize: t.size.md, fontWeight: t.weight.bold,

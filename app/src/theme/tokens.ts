@@ -1,4 +1,4 @@
-import { StyleSheet } from 'react-native';
+import { Platform, StyleSheet } from 'react-native';
 
 /**
  * 设计 token。
@@ -132,10 +132,25 @@ export const dark: Palette = {
  * 不加载外部字体是刻意的（原型 §7）：字体文件会显著拖长首屏，而这套排版
  * 依赖的是"系统上已经有的那几个"。
  */
-export const fonts = {
-  serif: 'Georgia',
-  sans: 'System',
-  mono: 'Menlo',
+export const fonts = Platform.select({
+  web: {
+    // 保持与原生一致的「拉丁衬线 + 中文无衬线」排版风格
+    serif: 'Georgia, "Iowan Old Style", "PingFang SC", "Hiragino Sans GB", "Noto Sans SC", "Microsoft YaHei", serif',
+    sans: '-apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI Variable Text", "PingFang SC", "Hiragino Sans GB", "Noto Sans SC", "Microsoft YaHei", system-ui, sans-serif',
+    mono: '"SF Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace',
+  },
+  default: {
+    serif: 'Georgia',
+    sans: 'System',
+    mono: 'Menlo',
+  },
+})!;
+
+export const layout = {
+  /** 平板/横屏下的正文阅读最大宽度，避免内容铺满整屏难扫读。 */
+  contentMaxW: 680,
+  /** 底部弹出面板在宽屏上的最大宽度，居中浮起。 */
+  sheetMaxW: 540,
 } as const;
 
 export const size = {
@@ -193,17 +208,17 @@ export type Shadow = {
 
 export const floatShadow: { light: Shadow; dark: Shadow } = {
   light: {
-    shadowColor: '#141413',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.06,
-    shadowRadius: 14,
-    elevation: 3,
+    shadowColor: '#16161c',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.08,
+    shadowRadius: 20,
+    elevation: 4,
   },
   dark: {
     shadowColor: '#000000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 14,
-    elevation: 3,
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.42,
+    shadowRadius: 22,
+    elevation: 4,
   },
 };

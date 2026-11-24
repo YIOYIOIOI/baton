@@ -83,9 +83,23 @@ export default function Root({ children }: PropsWithChildren) {
 // 静态 HTML 提供首帧兜底；_layout 按实际 React 主题和可视区域同步变量。
 // 不能只把漏出的背景染深：min-height 不会修正已经停在旧高度的页面。
 const BODY_BG = `
-:root { --baton-page-background: ${light.bgTertiary}; }
+:root {
+  --baton-page-background: ${light.bgTertiary};
+  --baton-sb: ${light.sb};
+  --baton-ring: ${light.ring};
+  --baton-accent: ${light.coral};
+}
 @media (prefers-color-scheme: dark) {
-  :root { --baton-page-background: ${dark.bgTertiary}; }
+  :root {
+    --baton-page-background: ${dark.bgTertiary};
+    --baton-sb: ${dark.sb};
+    --baton-ring: ${dark.ring};
+    --baton-accent: ${dark.coral};
+  }
+}
+*, *::before, *::after {
+  box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
 }
 html, body {
   width: 100%;
@@ -94,8 +108,52 @@ html, body {
   overflow: hidden;
   overscroll-behavior: none;
   background-color: var(--baton-page-background);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  -webkit-text-size-adjust: 100%;
 }
 html { height: var(--baton-viewport-height, 100dvh); }
+button, a, [role="button"], [role="link"], [role="checkbox"], [role="tab"], input, textarea {
+  touch-action: manipulation;
+}
+::selection {
+  background: color-mix(in srgb, var(--baton-accent) 22%, transparent);
+}
+:focus-visible {
+  outline: 2px solid var(--baton-ring);
+  outline-offset: 2px;
+}
+input:focus-visible, textarea:focus-visible {
+  outline: none;
+}
+/* 细滚动条：移动端默认系统灰条在 WebView/安卓/桌面仿真下会占掉右侧 12–15px 视觉边 */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+*:hover, *:active {
+  scrollbar-color: var(--baton-sb) transparent;
+}
+*::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background-color: transparent;
+}
+*:hover::-webkit-scrollbar-thumb,
+*:active::-webkit-scrollbar-thumb {
+  background-color: var(--baton-sb);
+}
+@media (pointer: coarse) {
+  * { scrollbar-width: none; }
+  *::-webkit-scrollbar { display: none; width: 0; height: 0; }
+}
 /* 「减弱动效」：网页上的 CSS 过渡（按下反馈那条，见 ui.tsx 的 WEB_PRESS）一并压成 0。
    RN 的 Animated 不走这里，那些在组件里各自读 useReduceMotion。 */
 @media (prefers-reduced-motion: reduce) {
