@@ -142,6 +142,9 @@ export const EN = {
   'pair.footMid': ' on your host machine,\nscan the QR code, or enter the 12-character code.',
 
   // List screen
+  'dock.sessions': 'Sessions',
+  'dock.settings': 'Settings',
+  'dock.new': 'New',
   'list.tabAll': 'All',
   'list.emptyTitle': 'No sessions yet',
   'list.emptyBody': 'Start one on your host machine, or create one below',

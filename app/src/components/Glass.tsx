@@ -212,18 +212,40 @@ export function webTint(
   dark: boolean, isDark: boolean, variant: GlassVariant = 'regular',
 ): string {
   if (variant === 'none') return 'transparent';
-  if (dark) return isDark ? 'rgba(242,240,234,0.80)' : 'rgba(34,33,31,0.72)';
-  // clear 档退到 0.34：它要的是「透得过去」，遮得越少越接近折射那种观感
-  if (variant === 'clear') return isDark ? 'rgba(46,46,51,0.38)' : 'rgba(255,255,255,0.34)';
-  return isDark ? 'rgba(46,46,51,0.66)' : 'rgba(255,255,255,0.62)';
+  if (dark) return isDark ? 'rgba(242,240,234,0.88)' : 'rgba(34,33,31,0.82)';
+  // clear 档退到 0.36：它要的是「透得过去」，遮得越少越接近折射那种观感
+  if (variant === 'clear') return isDark ? 'rgba(46,46,51,0.40)' : 'rgba(255,255,255,0.36)';
+  // regular 档在白底上需要足够实体感（0.82），配合细高光边与轻柔投影才能看出"浮在上面"
+  return isDark ? 'rgba(38,38,44,0.78)' : 'rgba(255,255,255,0.82)';
 }
 
 /** 网页端三档的模糊量。clear 只糊一点点，形状还认得出；none 就是不糊。 */
 const WEB_FILTER = {
   none: 'none',
-  clear: 'blur(6px) saturate(180%)',
-  regular: 'blur(22px) saturate(180%)',
+  clear: 'blur(8px) saturate(180%)',
+  regular: 'blur(24px) saturate(190%)',
 } as const;
+
+/** 网页端玻璃的镜面轮廓边与层次阴影：白底不再融隐、深色自带顶面微高光。 */
+function webChrome(dark: boolean, isDark: boolean, variant: GlassVariant): Record<string, unknown> {
+  if (variant === 'none') return {};
+  if (dark) {
+    return {
+      borderWidth: 1,
+      borderColor: isDark ? 'rgba(255,255,255,0.22)' : 'rgba(255,255,255,0.12)',
+      boxShadow: isDark
+        ? '0 6px 20px -6px rgba(0,0,0,0.45), inset 0 1px 0 rgba(255,255,255,0.35)'
+        : '0 8px 22px -8px rgba(20,20,24,0.36), inset 0 1px 0 rgba(255,255,255,0.12)',
+    };
+  }
+  return {
+    borderWidth: 1,
+    borderColor: isDark ? 'rgba(255,255,255,0.11)' : 'rgba(34,33,31,0.08)',
+    boxShadow: isDark
+      ? '0 8px 26px -8px rgba(0,0,0,0.58), 0 2px 6px rgba(0,0,0,0.28), inset 0 1px 0 rgba(255,255,255,0.09)'
+      : '0 6px 22px -6px rgba(22,22,28,0.11), 0 1.5px 4px rgba(22,22,28,0.05), inset 0 1px 0 rgba(255,255,255,0.88)',
+  };
+}
 
 /**
  * 原生玻璃的品牌色调。比网页那份淡得多——Liquid Glass 自己已经在做折射与自适应，
@@ -320,18 +342,19 @@ export function Glass({
         {...rest}
         style={[
           {
-            borderRadius: radius,
+            ...(radius === undefined ? null : { borderRadius: radius }),
             // saturate 是关键：只 blur 会得到一片灰糊，加饱和度才有「透过玻璃
             // 看到底下颜色」的感觉。这是 Apple 自己材质的一贯做法。
             //
             // 网页端做不出折射——CSS 没有这个能力。clear 档只能靠**少糊、少遮**
-            // 去靠近：模糊从 22px 降到 6px、底色透明度降一档，透过去的东西
+            // 去靠近：模糊从 24px 降到 8px、底色透明度降一档，透过去的东西
             // 还认得出形状。这是近似，不是同一样东西。
             backdropFilter: WEB_FILTER[variant],
             WebkitBackdropFilter: WEB_FILTER[variant],
             // 底色必须跟着深浅走。写死白的话，深色模式下这块玻璃是一片**亮**板
             // 压在暗页面上——浏览器实测过，底部操作条整条发白，完全不像浮着。
             backgroundColor: fade(webTint(dark, t.isDark, variant), subtle ? SUBTLE : 1),
+            ...webChrome(dark, t.isDark, variant),
           } as ViewStyle,
           style,
         ]}

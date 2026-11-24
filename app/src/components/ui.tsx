@@ -6,7 +6,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme, type Theme } from '@/theme';
 import { IconBack, IconBall, IconDots, IconMenu, IconRight } from '@/icons';
-import { Glass, GlassGroup, glassCapsules, useNativeGlass } from './Glass';
+import { Glass, GlassGroup, glassCapsules, useGlassPath, useNativeGlass } from './Glass';
 import * as haptics from '@/feedback/haptics';
 import { markOverlayTap, wantsOverlay } from '@/feedback/webHaptics';
 import { DUR, EASE_IN_OUT, EASE_OUT, EASE_SHEET } from '@/motion/curves';
@@ -294,17 +294,19 @@ export function FloatBar({
   const inset = useSafeAreaInsets();
   return (
     <View style={[s.floatBar, { paddingTop: inset.top + 8 }]} pointerEvents="box-none">
-      {left ?? (
-        <Fab
-          onPress={onBack ?? onMenu}
-          label={onBack ? '返回' : '菜单'}
-          icon={onBack
-            ? <IconBack size={19} color={t.c.txSecondary} />
-            : <IconMenu size={19} color={t.c.txSecondary} />}
-        />
-      )}
-      <View style={{ flex: 1 }} pointerEvents="none" />
-      {right}
+      <View style={s.floatBarInner} pointerEvents="box-none">
+        {left ?? (
+          <Fab
+            onPress={onBack ?? onMenu}
+            label={onBack ? '返回' : '菜单'}
+            icon={onBack
+              ? <IconBack size={19} color={t.c.txSecondary} />
+              : <IconMenu size={19} color={t.c.txSecondary} />}
+          />
+        )}
+        <View style={{ flex: 1 }} pointerEvents="none" />
+        {right}
+      </View>
     </View>
   );
 }
@@ -314,13 +316,14 @@ export function Fab({
 }: { onPress?: () => void; label: string; icon: React.ReactNode }) {
   const t = useTheme();
   const s = ui(t);
-  const native = useNativeGlass();
+  const path = useGlassPath();
+  const native = path === 'native';
   return (
     // 玻璃在外、Pressable 在内：GlassView 的已知问题是父级 opacity 为 0 会让
     // 效果整个不渲染，而 Pressable 的按下反馈正是改 opacity——套反了就会闪。
     // interactive：让材质随手指形变，这是 iOS 26 上玻璃「是活的」的来源。
-    // 阴影只在没有原生玻璃时补——Liquid Glass 自带景深，再叠一层是重复。
-    <Glass radius={999} interactive style={[s.fab, !native && t.shadow]}>
+    // 阴影只在 opaque 兜底路径补——native 自带景深，web 已有 Glass.webChrome() 多层阴影与内高光。
+    <Glass radius={999} interactive style={[s.fab, path === 'opaque' && t.shadow]}>
       <Tappable
         onPress={onPress}
         haptic={haptics.tap}
@@ -348,14 +351,14 @@ export function Fab({
 export function FabPill({ children }: { children: React.ReactNode }) {
   const t = useTheme();
   const s = ui(t);
-  const native = useNativeGlass();
+  const path = useGlassPath();
 
-  if (native) {
+  if (path === 'native') {
     return <GlassGroup spacing={16} style={s.fabCluster}>{glassCapsules(children, s.fabCapsule)}</GlassGroup>;
   }
   // 玻璃而不是实心白：这条药丸浮在会话流之上，底下的字滚过去时透出来一点
   // 才像浮着；实心白像贴了一块纸片。
-  return <Glass radius={999} style={[s.fabPill, t.shadow]}>{children}</Glass>;
+  return <Glass radius={999} style={[s.fabPill, path === 'opaque' && t.shadow]}>{children}</Glass>;
 }
 
 export function FabPillButton({
@@ -513,6 +516,7 @@ export function Sheet({
         量到高度之前按整屏高度推到屏幕外：位置在屏幕外就是看不见。
       */}
       <Animated.View
+        pointerEvents="box-none"
         onLayout={(e) => {
           const h = Math.round(e.nativeEvent.layout.height);
           // 只在真的变了时才 set：onLayout 会重复触发，每次 set 都会重建
@@ -554,7 +558,10 @@ export function Sheet({
         */}
         <View style={[s.sheet, s.sheetFill, { paddingBottom: t.space.pad + inset.bottom }]}>
           <View style={s.grab} />
-          <ScrollView contentContainerStyle={{ paddingBottom: 4 }}>
+          <ScrollView
+            style={Platform.OS === 'web' ? ({ overscrollBehavior: 'contain' } as never) : undefined}
+            contentContainerStyle={{ paddingBottom: 4 }}
+          >
             {/*
               返回箭头和标题同一行。箭头单独一行的话，子页面的标题会比主页面
               低一截，来回切时整块内容上下跳。
@@ -637,9 +644,10 @@ export function PillGlass({
 }) {
   const t = useTheme();
   const s = ui(t);
-  const native = useNativeGlass();
+  const path = useGlassPath();
+  const native = path === 'native';
   return (
-    <Glass radius={999} interactive style={[s.pillGlass, !native && t.shadow, style]}>
+    <Glass radius={999} interactive style={[s.pillGlass, path === 'opaque' && t.shadow, style]}>
       <Tappable
         onPress={onPress}
         haptic={haptics.tap}
@@ -799,8 +807,12 @@ export const ui = (t: Theme) =>
   StyleSheet.create({
     floatBar: {
       position: 'absolute', top: 0, left: 0, right: 0, zIndex: t.z.floatBar,
-      flexDirection: 'row', alignItems: 'center',
+      alignItems: 'center',
       paddingHorizontal: FLOAT_BAR_X, paddingBottom: 8,
+    },
+    floatBarInner: {
+      width: '100%', maxWidth: t.layout.contentMaxW,
+      flexDirection: 'row', alignItems: 'center',
     },
     // 阴影不写在这里：有原生玻璃时材质自带景深，由组件按 useNativeGlass() 决定加不加
     fab: {
@@ -841,15 +853,27 @@ export const ui = (t: Theme) =>
 
     scrim: {
       position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
-      backgroundColor: 'rgba(20,20,19,0.38)',
+      backgroundColor: t.isDark ? 'rgba(0,0,0,0.56)' : 'rgba(20,20,19,0.36)',
+      ...(Platform.OS === 'web' ? ({ backdropFilter: 'blur(3px)', WebkitBackdropFilter: 'blur(3px)' } as unknown as ViewStyle) : null),
     },
     scrimHit: { flex: 1 },
     // 位移挂在外层，玻璃面板自己不动——把 transform 加在 GlassView 上，
     // 材质的采样会跟着一起位移，边缘会糊
-    sheetWrap: { position: 'absolute', left: 0, right: 0, bottom: 0, maxHeight: '86%' },
+    sheetWrap: {
+      position: 'absolute', left: 0, right: 0, bottom: 0, maxHeight: '86%',
+      alignItems: 'center',
+    },
     sheet: {
-      borderTopLeftRadius: 24, borderTopRightRadius: 24,
+      width: '100%', maxWidth: t.layout.sheetMaxW,
+      borderTopLeftRadius: 26, borderTopRightRadius: 26,
+      borderTopWidth: t.hairline, borderLeftWidth: t.hairline, borderRightWidth: t.hairline,
+      borderColor: t.isDark ? 'rgba(255,255,255,0.10)' : 'rgba(34,33,31,0.07)',
       paddingHorizontal: t.space.pad, paddingTop: 8, paddingBottom: t.space.pad,
+      ...(Platform.OS === 'web' ? ({
+        boxShadow: t.isDark
+          ? '0 -12px 40px -8px rgba(0,0,0,0.72), inset 0 1px 0 rgba(255,255,255,0.08)'
+          : '0 -10px 36px -10px rgba(22,22,28,0.18), inset 0 1px 0 rgba(255,255,255,0.9)',
+      } as unknown as ViewStyle) : null),
     },
     /**
      * 不透明底色。用 bgPrimary 而不是 bgTertiary：面板里的卡片是 bgSecondary，
@@ -861,11 +885,11 @@ export const ui = (t: Theme) =>
     // 让标题保持在和主页面同一个水平位置上——否则来回切会看到标题左右跳
     sheetNav: { flexDirection: 'row', alignItems: 'center', gap: 4, marginLeft: -8 },
     sheetBack: {
-      width: 36, height: 36, alignItems: 'center', justifyContent: 'center',
+      width: 40, height: 40, borderRadius: t.radius.full, alignItems: 'center', justifyContent: 'center',
     },
     grab: {
-      width: 34, height: 4, borderRadius: t.radius.full,
-      backgroundColor: t.c.bdTertiary, alignSelf: 'center', marginTop: 4, marginBottom: 12,
+      width: 38, height: 4, borderRadius: t.radius.full,
+      backgroundColor: t.c.bdSecondary, opacity: 0.45, alignSelf: 'center', marginTop: 4, marginBottom: 12,
     },
     sheetH: {
       marginTop: 16, marginBottom: 4, fontSize: t.size.xs,
@@ -887,19 +911,24 @@ export const ui = (t: Theme) =>
     // 底色交给 Glass，这里只留几何
     pillGlass: { borderRadius: t.radius.full },
     pillGlassInner: {
+      flexGrow: 1, alignSelf: 'stretch',
       flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7,
-      paddingHorizontal: 22, paddingVertical: 13, minHeight: t.space.tap,
+      paddingHorizontal: 18, paddingVertical: 10, minHeight: t.space.tap,
     },
     // 常规玻璃上用正文色，不是反色——反色是给深色实心块准备的
     pillGlassTx: {
-      color: t.c.txPrimary, fontSize: t.size.md, fontWeight: t.weight.bold, fontFamily: t.fonts.sans,
+      color: t.c.txPrimary, fontSize: t.size.sm, fontWeight: t.weight.bold, fontFamily: t.fonts.sans,
+      letterSpacing: -0.1,
     },
     pillSelect: {
       flexDirection: 'row', alignItems: 'center', gap: 6,
-      backgroundColor: t.c.bgPrimary, borderRadius: t.radius.full,
-      paddingHorizontal: 13, paddingVertical: 7, minHeight: 34, minWidth: 0,
+      backgroundColor: t.isDark ? 'rgba(255,255,255,0.08)' : t.c.bgSecondary,
+      borderWidth: t.hairline,
+      borderColor: t.isDark ? 'rgba(255,255,255,0.09)' : 'rgba(34,33,31,0.08)',
+      borderRadius: t.radius.full,
+      paddingHorizontal: 13, paddingVertical: 7, minHeight: 36, minWidth: 0,
     },
-    pillSelectTx: { fontSize: t.size.xs, color: t.c.txPrimary, fontFamily: t.fonts.sans },
+    pillSelectTx: { fontSize: t.size.xs, fontWeight: '500', color: t.c.txPrimary, fontFamily: t.fonts.sans },
     pillSelectDim: { fontSize: t.size.xs, color: t.c.txTertiary, fontFamily: t.fonts.sans },
 
     chips: { flexDirection: 'row', flexWrap: 'wrap', gap: 7, paddingTop: 6, paddingBottom: 2 },

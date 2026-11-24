@@ -80,11 +80,19 @@ function boot() {
   });
   const config = { host: '127.0.0.1', port: 0, allowSend: false };
   const auth = createAuth({ token: TOKEN });
+  const terminalLauncher = async ({ member }) => ({
+    ok: true,
+    terminal: 'mock',
+    agent: member.agent,
+    cwd: member.cwd,
+    sessionId: member.providerId,
+  });
   return {
     repo,
     config,
     auth,
-    routes: buildRoutes({ auth }),
+    terminalLauncher,
+    routes: buildRoutes({ auth, terminalLauncher }),
   };
 }
 

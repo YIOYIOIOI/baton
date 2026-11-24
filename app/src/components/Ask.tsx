@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { StyleSheet, Text, TextInput, View } from 'react-native';
+import { Platform, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useTheme, type Theme } from '@/theme';
 import { Tappable } from './ui';
 import * as haptics from '@/feedback/haptics';
@@ -40,6 +40,7 @@ export function AskCard({ ask, onAnswer, onDone }: {
   const [picked, setPicked] = useState<string[]>([]);
   const [free, setFree] = useState('');
   const [writing, setWriting] = useState(false);
+  const [inputFocus, setInputFocus] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
@@ -116,9 +117,11 @@ export function AskCard({ ask, onAnswer, onDone }: {
 
       {writing ? (
         <TextInput
-          style={s.input}
+          style={[s.input, inputFocus && s.inputFocus]}
           value={free}
           onChangeText={setFree}
+          onFocus={() => setInputFocus(true)}
+          onBlur={() => setInputFocus(false)}
           placeholder="给定的选项都不对，就在这儿说"
           placeholderTextColor={t.c.txTertiary}
           multiline
@@ -181,15 +184,19 @@ const styles = (t: Theme) => StyleSheet.create({
   writeText: { fontSize: 13, color: t.c.txTertiary, textDecorationLine: 'underline' },
   input: {
     minHeight: 76,
-    padding: 10,
+    padding: 12,
     borderRadius: 12,
     borderWidth: 1,
     borderColor: t.c.bdTertiary,
     backgroundColor: t.c.bgPrimary,
     color: t.c.txPrimary,
-    fontSize: 15,
-    lineHeight: 21,
+    fontSize: 16,
+    lineHeight: 22,
     textAlignVertical: 'top',
+    ...(Platform.OS === 'web' ? { outlineStyle: 'none' as never } : null),
+  },
+  inputFocus: {
+    borderColor: t.c.coral,
   },
   send: {
     minHeight: t.space.tap,

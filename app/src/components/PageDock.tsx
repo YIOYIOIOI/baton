@@ -1,11 +1,14 @@
+import { useMemo } from 'react';
 import { useRouter } from 'expo-router';
-import { StyleSheet, View } from 'react-native';
+import { Platform, StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme, type Theme } from '@/theme';
 import { IconPlus } from '@/icons';
-import { Glass, GlassGroup } from './Glass';
+import { Glass, GlassGroup, useGlassPath } from './Glass';
 import { PillGlass } from './ui';
+import { ScrollEdge } from './ScrollEdge';
 import { Segmented } from './Segmented';
+import { useLocale } from '@/i18n';
 
 /**
  * 底部那条。**两页之间的切换器 + 主操作**。
@@ -70,76 +73,94 @@ export function PageDock({ state, navigation }: TabBarSlice) {
   const s = styles(t);
   const router = useRouter();
   const inset = useSafeAreaInsets();
+  const glassPath = useGlassPath();
+  const { isEn, en } = useLocale();
 
   const current = state.routes[state.index]?.name;
   const page: Page = current === ROUTE.settings ? 'settings' : 'sessions';
+  const items = useMemo(
+    () => (isEn
+      ? [['sessions', en('dock.sessions')], ['settings', en('dock.settings')]] as const
+      : PAGES),
+    [isEn, en],
+  );
+  const edgeH = DOCK_BODY + Math.max(12, inset.bottom) + 18;
+  const switcherH = Platform.OS === 'web' ? SWITCHER_H - 2 : SWITCHER_H;
 
   return (
-    <View
-      style={[s.dock, { paddingBottom: Math.max(12, inset.bottom) }]}
-      // 两侧是空的，那儿的滑动要落到内容上，不能被一块透明的全宽 View 吃掉
-      pointerEvents="box-none"
-    >
-      {/*
-        **两块玻璃并排，靠近时由 GlassContainer 粘连。**
+    <>
+      <ScrollEdge
+        edge="bottom"
+        height={edgeH}
+        color={page === 'settings' ? t.c.bgGrouped : t.c.bgTertiary}
+      />
+      <View
+        style={[s.dock, { paddingBottom: Math.max(12, inset.bottom) }]}
+        // 两侧是空的，那儿的滑动要落到内容上，不能被一块透明的全宽 View 吃掉
+        pointerEvents="box-none"
+      >
+        {/*
+          **两块玻璃并排，靠近时由 GlassContainer 粘连。**
 
-        owner 对着 Telegram 的底栏要的就是这个：点右边那颗，它放大时和左边那条
-        并成一体。查官方文档之后，上一版合不起来的原因很简单——
+          owner 对着 Telegram 的底栏要的就是这个：点右边那颗，它放大时和左边那条
+          并成一体。查官方文档之后，上一版合不起来的原因很简单——
 
-            容器里**只有一块玻璃**。左边那颗是系统的 UISegmentedControl，
-            它不是 UIVisualEffectView，容器眼里根本没有它，一块东西没法融合。
+              容器里**只有一块玻璃**。左边那颗是系统的 UISegmentedControl，
+              它不是 UIVisualEffectView，容器眼里根本没有它，一块东西没法融合。
 
-        所以轨道改由我们自己的 Glass 提供，分段控件 `transparent` 让位坐在上面。
-        两块都是 GlassView，容器才有得合。
+          所以轨道改由我们自己的 Glass 提供，分段控件 `transparent` 让位坐在上面。
+          两块都是 GlassView，容器才有得合。
 
-        文档里另外两条也核对过了：
-          - 子元素要直接挂在 contentView 上 —— expo 的 mountChildComponentView
-            就是这么做的
-          - **别给子元素设 clipsToBounds / layer.cornerRadius**，会挡住融合；
-            要用 cornerConfiguration —— expo 的 updateBorderRadius 用的正是它，
-            所以圆角不是障碍
+          文档里另外两条也核对过了：
+            - 子元素要直接挂在 contentView 上 —— expo 的 mountChildComponentView
+              就是这么做的
+            - **别给子元素设 clipsToBounds / layer.cornerRadius**，会挡住融合；
+              要用 cornerConfiguration —— expo 的 updateBorderRadius 用的正是它，
+              所以圆角不是障碍
 
-        spacing 给 12，比两颗之间 8pt 的间距略大：平时微微相吸，按下放大时并成一条。
+          spacing 给 12，比两颗之间 8pt 的间距略大：平时微微相吸，按下放大时并成一条。
 
-        ## 掉帧的来源（owner：「底部栏的动画有点掉帧，但是顶栏的不会」）
+          ## 掉帧的来源（owner：「底部栏的动画有点掉帧，但是顶栏的不会」）
 
-        两条的差别不在代码质量，在**背景动不动**：
+          两条的差别不在代码质量，在**背景动不动**：
 
-          顶栏  在静态头部里，背后那块不滚动 → 玻璃不用重新取样，1 层效果视图
-          底栏  绝对定位浮在列表上，背后每帧都在变 → 每帧重新取样，而且是 **3 层**
-                （容器 UIGlassContainerEffect + 轨道 UIGlassEffect + 按钮 UIGlassEffect）
+            顶栏  在静态头部里，背后那块不滚动 → 玻璃不用重新取样，1 层效果视图
+            底栏  绝对定位浮在列表上，背后每帧都在变 → 每帧重新取样，而且是 **3 层**
+                  （容器 UIGlassContainerEffect + 轨道 UIGlassEffect + 按钮 UIGlassEffect）
 
-        3 层里有 2 层是为了「粘连」才有的：容器负责合并，轨道那层负责当被合并的
-        另一块（系统分段控件不是 UIVisualEffectView，容器看不见它）。也就是说
-        **粘连和帧率在这儿是同一笔账**：
+          3 层里有 2 层是为了「粘连」才有的：容器负责合并，轨道那层负责当被合并的
+          另一块（系统分段控件不是 UIVisualEffectView，容器看不见它）。也就是说
+          **粘连和帧率在这儿是同一笔账**：
 
-          留着       3 层，能粘连，滚动时偏重
-          去掉容器   2 层，不粘连，轻一档
+            留着       3 层，能粘连，滚动时偏重
+            去掉容器   2 层，不粘连，轻一档
 
-        没有第三种——除非 expo-glass-effect 哪天让 GlassView 本体就是效果视图，
-        那样系统控件也许能参与合并。要改先量，别凭感觉换。
-      */}
-      <GlassGroup spacing={12} style={s.cluster}>
-        <Glass radius={999} style={s.bar}>
-          <Segmented
-            width={SWITCHER_W}
-            height={SWITCHER_H}
-            transparent
-            items={PAGES}
-            value={page}
-            onChange={(next) => {
-              if (next === page) return;
-              navigation.navigate(ROUTE[next]);
-            }}
+          没有第三种——除非 expo-glass-effect 哪天让 GlassView 本体就是效果视图，
+          那样系统控件也许能参与合并。要改先量，别凭感觉换。
+        */}
+        <GlassGroup spacing={12} style={s.cluster}>
+          <Glass radius={999} style={[s.bar, glassPath === 'opaque' && t.shadow]}>
+            <Segmented
+              width={SWITCHER_W}
+              height={switcherH}
+              transparent
+              items={items}
+              value={page}
+              onChange={(next) => {
+                if (next === page) return;
+                navigation.navigate(ROUTE[next]);
+              }}
+            />
+          </Glass>
+          <PillGlass
+            label={isEn ? en('dock.new') : '新会话'}
+            icon={<IconPlus size={16} color={t.c.coral} strokeWidth={2.3} />}
+            onPress={() => router.push('/new')}
+            style={s.newPill}
           />
-        </Glass>
-        <PillGlass
-          label="新会话"
-          icon={<IconPlus size={16} color={t.c.txPrimary} />}
-          onPress={() => router.push('/new')}
-        />
-      </GlassGroup>
-    </View>
+        </GlassGroup>
+      </View>
+    </>
   );
 }
 
@@ -153,4 +174,5 @@ const styles = (t: Theme) =>
     cluster: { flexDirection: 'row', alignItems: 'center', gap: 8 },
     // 轨道那块玻璃。不裁剪——融合时那两块要能往彼此那儿伸出去
     bar: { height: SWITCHER_H, justifyContent: 'center', overflow: 'visible' },
+    newPill: { height: SWITCHER_H, justifyContent: 'center' },
   });

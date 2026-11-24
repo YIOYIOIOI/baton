@@ -108,6 +108,13 @@ export const api = {
   /** Downloadable Markdown session transcript URL. */
   exportUrl: (key: string) => `/api/sessions/${enc(key)}/export`,
 
+  /** Open this session in a local interactive terminal on the host (local owner dashboard only). */
+  openTerminal: (key: string) =>
+    request<OpenTerminalResult>(`/api/sessions/${enc(key)}/terminal`, {
+      method: 'POST',
+      body: '{}',
+    }),
+
   /**
    * 浏览目录。**不传 path 时返回起点**——owner 拿到盘符 + 用过的目录，
    * 访客拿到自己的工作区根。起点页面直接打这个，**不要自己拼盘符**。
@@ -641,6 +648,8 @@ export type Member = {
    * 一个是等它干完，一个是它在等你。老服务端没有这个字段。
    */
   waiting?: boolean;
+  /** Whether this session can be resumed in a local CLI terminal (`claude`, `codex`, `agy` CLI). */
+  supportsTerminal?: boolean;
 };
 
 export type Chain = {
@@ -709,8 +718,21 @@ export type Health = {
   deviceId?: string | null;
   version?: string;
   allowSend: boolean;
+  isLocal?: boolean;
+  canOpenTerminal?: boolean;
   canSetPermissionMode?: boolean;
   principal?: { id: string; isOwner: boolean; generation?: string };
+};
+
+export type OpenTerminalResult = {
+  ok: true;
+  terminal: string;
+  agent: Agent;
+  cwd: string;
+  sessionId: string;
+  permissionMode?: string;
+  model?: string | null;
+  effort?: string | null;
 };
 
 export type DeviceItem = {

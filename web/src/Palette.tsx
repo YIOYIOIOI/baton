@@ -7,6 +7,7 @@ import { getPrefs, setPrefs, usePrefs } from './prefs';
 import { navigate } from './router';
 import { ago, dirLabel } from './sessions';
 import { copyText, keyLabel, openShortcuts, openUsage, toggleRail } from './ui';
+import { openSessionTerminal } from './terminal';
 import './palette.css';
 
 export type Shortcut = { combo: string; labelKey: MsgKey; groupKey: 'palette.groupNav' | 'palette.groupInput' };
@@ -31,10 +32,17 @@ type Item =
   | { kind: 'cmd'; id: string; label: string; hint?: string; sub?: string; run: () => void }
   | { kind: 'session'; id: string; member: Member };
 
-function commands(current: string | null, members: Member[] | null, isOwner: boolean, t: (k: MsgKey) => string): Item[] {
+function commands(
+  current: string | null,
+  members: Member[] | null,
+  isOwner: boolean,
+  canOpenTerminal: boolean,
+  t: (k: MsgKey) => string,
+): Item[] {
   const p = getPrefs();
   const activeLoc = resolveLocale(p.locale);
   const last = p.visited.find((k) => k !== current && members?.some((m) => m.key === k)) ?? null;
+  const currentMember = current ? members?.find((m) => m.key === current) ?? null : null;
   const out: Item[] = [
     { kind: 'cmd', id: 'new', label: t('shell.newSession'), hint: hint('mod+shift+o'), run: () => navigate('/new') },
   ];
@@ -46,6 +54,12 @@ function commands(current: string | null, members: Member[] | null, isOwner: boo
     });
   }
   if (current) {
+    if (canOpenTerminal && currentMember?.supportsTerminal) {
+      out.push({
+        kind: 'cmd', id: 'open-terminal', label: t('palette.cmdOpenTerminal'),
+        run: () => { void openSessionTerminal(current); },
+      });
+    }
     out.push({
       kind: 'cmd', id: 'copy-link', label: t('palette.cmdCopyLink'),
       run: () => copyText(window.location.href, t('shell.copiedLink')),
@@ -108,11 +122,12 @@ function searchSessions(members: Member[], q: string): Member[] {
 }
 
 export function Palette({
-  members, current, isOwner = true, onClose,
+  members, current, isOwner = true, canOpenTerminal = false, onClose,
 }: {
   members: Member[] | null;
   current: string | null;
   isOwner?: boolean;
+  canOpenTerminal?: boolean;
   onClose: () => void;
 }) {
   const { locale, t } = useI18n();
@@ -135,7 +150,7 @@ export function Palette({
   const sections = useMemo(() => {
     const all = members ?? [];
     const tr = (k: MsgKey, vars?: Record<string, string | number>) => translate(locale, k, vars);
-    const cmds = commands(current, members, isOwner, tr);
+    const cmds = commands(current, members, isOwner, canOpenTerminal, tr);
     const query = q.trim();
     if (!query) {
       const recent = prefs.visited
@@ -153,7 +168,7 @@ export function Palette({
       { title: tr('palette.secSessions'), items: searchSessions(all, query).slice(0, 30).map((m): Item => ({ kind: 'session', id: m.key, member: m })) },
       { title: tr('palette.secCmds'), items: cmds.filter((c) => c.kind === 'cmd' && c.label.toLowerCase().includes(lq)) },
     ].filter((s) => s.items.length);
-  }, [q, members, current, isOwner, prefs.visited, locale]);
+  }, [q, members, current, isOwner, canOpenTerminal, prefs.visited, locale]);
 
   const flat = sections.flatMap((s) => s.items);
 

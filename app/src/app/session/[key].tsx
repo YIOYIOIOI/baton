@@ -15,6 +15,7 @@ import { useLocale } from '@/i18n';
 import {
   BallSpinner, DotsIcon, FabPill, FabPillButton, FloatBar, Hist, Tappable, useFloatBarHeight,
 } from '@/components/ui';
+import { ScrollEdge } from '@/components/ScrollEdge';
 import * as haptics from '@/feedback/haptics';
 import { LinkDot } from '@/components/LinkDot';
 import { Blocked, Notice } from '@/components/Notice';
@@ -182,6 +183,8 @@ export default function SessionScreen() {
   }, [draftOwner, key]);
   const scRef = useRef<ScrollView>(null);
   const initialScrollDone = useRef(false);
+  const nearBottom = useRef(true);
+  const prevComposerH = useRef(0);
   const barH = useFloatBarHeight();
   const inset = useSafeAreaInsets();
   const kbInset = useKeyboardInset(inset.bottom);
@@ -260,16 +263,29 @@ export default function SessionScreen() {
   }, [live.turn]);
 
   // 会话详情默认落在最新一条消息，而不是把用户丢在历史开头。
-  // 只在首次内容准备好时做一次，后续滚动交给用户；实时运行中的自动跟随仍由
-  // onContentSizeChange 负责，避免用户手动往上看时被抢回底部。
+  // 等底部浮层（composerH）量出真实高度后再滚到底，免得首帧被输入区和排队卡盖住半截；
+  // 标志放在 RAF 回调内再置 true，避免首帧前布局/事件更新取消 RAF 后永久丢失初始滚动。
   useEffect(() => {
-    if (live.loading || !live.events.length || initialScrollDone.current) return;
-    initialScrollDone.current = true;
+    if (live.loading || !live.events.length || composerH <= 0 || initialScrollDone.current) return;
+    const frame = requestAnimationFrame(() => {
+      initialScrollDone.current = true;
+      prevComposerH.current = composerH;
+      scRef.current?.scrollToEnd({ animated: false });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [live.loading, live.events.length, composerH]);
+
+  // 底部浮层长高时（排队卡/选择题出现、输入区换行），若用户本就在底部附近，
+  // 顺手补滚到底部，避免最新一条消息和运行指示被新长出来的浮层遮住。
+  useEffect(() => {
+    const prev = prevComposerH.current;
+    prevComposerH.current = composerH;
+    if (!initialScrollDone.current || composerH <= prev || !nearBottom.current) return;
     const frame = requestAnimationFrame(() => {
       scRef.current?.scrollToEnd({ animated: false });
     });
     return () => cancelAnimationFrame(frame);
-  }, [live.loading, live.events.length]);
+  }, [composerH]);
 
   /**
    * 真正往外送。**失败不抛，落在那条 pending 上**——界面要看得见。
@@ -627,7 +643,7 @@ export default function SessionScreen() {
       <Stack.Screen options={{ headerShown: false }} />
 
       {link !== 'ok' ? (
-        <View style={{ paddingTop: barH - 4 }}><Notice link={link} onAction={live.refreshState} /></View>
+        <View style={[s.col, { paddingTop: barH + 4 }]}><Notice link={link} onAction={live.refreshState} /></View>
       ) : null}
 
       <ScrollView
@@ -664,8 +680,13 @@ export default function SessionScreen() {
          */
         contentContainerStyle={[
           s.scroll,
-          { paddingTop: link === 'ok' ? barH : 4, paddingBottom: composerH + kbInset },
+          { paddingTop: link === 'ok' ? barH + 4 : 4, paddingBottom: composerH + kbInset + 20 },
         ]}
+        scrollEventThrottle={120}
+        onScroll={(e) => {
+          const { contentOffset, contentSize, layoutMeasurement } = e.nativeEvent;
+          nearBottom.current = contentSize.height - (contentOffset.y + layoutMeasurement.height) <= 96;
+        }}
         onContentSizeChange={() => {
           // 断连时不自动滚：那会把用户正在读的位置抢走，而这时候他最需要的
           // 恰恰是「刚才说到哪了」
@@ -904,15 +925,20 @@ export default function SessionScreen() {
         owner 第一版实测「现在又太远了」），再往上留出那道窄缝。
         传进去的外边距必须和 Composer 里实际用的那个式子一致。
       */}
+      {composerH > 0 ? <ScrollEdge edge="bottom" height={Math.min(composerH + 22, 260)} /> : null}
       <KeyboardStickyView
         // 浮在滚动内容之上，不再占用布局空间——内容要能从它底下穿过去（见 ScrollView）
         style={s.dock}
+        offset={keyboardStickyOffset(Math.max(10, inset.bottom))}
+        pointerEvents="box-none"
+      >
+      <View
+        style={s.dockInner}
         // 高度实测给滚动区当底部留白用。只在真的变了时才 set：onLayout 会重复触发
         onLayout={(e) => {
           const h = Math.round(e.nativeEvent.layout.height);
           setComposerH((prev) => (prev === h ? prev : h));
         }}
-        offset={keyboardStickyOffset(Math.max(10, inset.bottom))}
         pointerEvents="box-none"
       >
       {/*
@@ -1072,8 +1098,10 @@ export default function SessionScreen() {
           />
         }
       />
+      </View>
       </KeyboardStickyView>
 
+      <ScrollEdge height={barH + 6} />
       <FloatBar
         onBack={() => router.back()}
         right={
@@ -1145,7 +1173,7 @@ function tokenTotal(tokens: Record<string, number> | null | undefined): number |
 const styles = (t: Theme) =>
   StyleSheet.create({
     screen: { flex: 1, backgroundColor: t.c.bgTertiary },
-    noticeSlot: { paddingTop: 52 },
+    col: { width: '100%', maxWidth: t.layout.contentMaxW, alignSelf: 'center' },
     scrollView: { flex: 1 },
     older: { borderRadius: t.radius.md },
     // 选来源那三行：图标和字一组，右边的箭头由 moreRow 的 space-between 顶开
@@ -1153,9 +1181,15 @@ const styles = (t: Theme) =>
     // 进会话时那颗球。留足高度，免得内容一到就整块往下跳一大截
     booting: { alignItems: 'center', justifyContent: 'center', paddingVertical: 72 },
     // 底部留白由输入区的实测高度决定，见下面 composerH——这里不写死
-    scroll: { paddingTop: 56 },
+    scroll: {
+      paddingTop: 56,
+      width: '100%',
+      maxWidth: t.layout.contentMaxW,
+      alignSelf: 'center',
+    },
     // 输入区浮在内容之上。内容铺到屏幕底，从它底下穿过去（照 ChatGPT）
-    dock: { position: 'absolute', left: 0, right: 0, bottom: 0 },
+    dock: { position: 'absolute', left: 0, right: 0, bottom: 0, zIndex: t.z.dock },
+    dockInner: { width: '100%', maxWidth: t.layout.contentMaxW, alignSelf: 'center' },
     attachErr: {
       marginHorizontal: t.space.pad, marginBottom: 8,
       fontSize: t.size.xs, color: t.c.txDanger, fontFamily: t.fonts.sans,
@@ -1164,19 +1198,23 @@ const styles = (t: Theme) =>
       marginHorizontal: t.space.pad, marginBottom: 8,
       fontSize: t.size.xs, color: t.c.txInfo, fontFamily: t.fonts.sans,
     },
-    // 排着的那几条：一条一行，右边跟着「立刻发 / 撤回」。
-    // 原来只有一行「N 条排队中」——看得见数量，却什么都做不了
+    // 排着的那几条：浮在输入区上方的轻卡片，有边框与投影，不和对话正文混成一片
     queuedBox: {
-      marginHorizontal: t.space.pad, marginBottom: 8,
-      borderRadius: t.radius.lg, backgroundColor: t.c.bgSecondary,
-      paddingHorizontal: 12, paddingVertical: 8,
+      marginHorizontal: 14, marginBottom: 8,
+      borderRadius: 18, backgroundColor: t.c.bgPrimary,
+      borderWidth: t.hairline, borderColor: t.c.bdTertiary,
+      paddingHorizontal: 13, paddingVertical: 10,
+      ...t.shadow,
     },
-    queuedRow: { flexDirection: 'row', alignItems: 'center', gap: 8, minHeight: 34 },
-    queuedTx: { flex: 1, fontSize: t.size.sm, color: t.c.txPrimary, fontFamily: t.fonts.sans },
-    // 文字按钮，不画框：这一小块里塞两个带框的按钮会比消息本身还抢眼
-    queuedBtn: { paddingHorizontal: 8, paddingVertical: 6 },
-    queuedBtnTx: { fontSize: t.size.xs, color: t.c.txInfo, fontFamily: t.fonts.sans },
-    queuedWhy: { marginTop: 2, fontSize: t.size.xs, color: t.c.txTertiary, fontFamily: t.fonts.sans },
+    queuedRow: { flexDirection: 'row', alignItems: 'center', gap: 6, minHeight: 36 },
+    queuedTx: { flex: 1, fontSize: 14, color: t.c.txPrimary, fontFamily: t.fonts.sans },
+    queuedBtn: {
+      paddingHorizontal: 11, paddingVertical: 6, minHeight: 32,
+      borderRadius: t.radius.full, backgroundColor: t.c.bgSecondary,
+      justifyContent: 'center', alignItems: 'center',
+    },
+    queuedBtnTx: { fontSize: t.size.xs, fontWeight: t.weight.bold, color: t.c.txInfo, fontFamily: t.fonts.sans },
+    queuedWhy: { marginTop: 4, fontSize: 12, color: t.c.txTertiary, fontFamily: t.fonts.sans },
   });
 
 /**

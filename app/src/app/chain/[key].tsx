@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { useTheme, type Theme } from '@/theme';
-import { FloatBar, ListMeta, Wordmark, useFloatBarHeight } from '@/components/ui';
+import { FloatBar, ListMeta, Tappable, Wordmark, useFloatBarHeight } from '@/components/ui';
+import { ScrollEdge } from '@/components/ScrollEdge';
 import { useConnection } from '@/store/connection';
 import type { Chain } from '@/api/types';
 
@@ -55,9 +56,10 @@ export default function ChainScreen() {
         ) : null}
 
         {members.map((m) => (
-          <Pressable
+          <Tappable
             key={m.key}
-            style={({ pressed }) => [s.row, pressed && { backgroundColor: t.c.bgSecondary }]}
+            style={s.row}
+            feedback="fill"
             onPress={() => router.push({ pathname: '/session/[key]', params: { key: m.key } })}
             accessibilityRole="button"
           >
@@ -73,10 +75,11 @@ export default function ChainScreen() {
               </Text>
               <Text style={s.sub}>{when(m.lastTs)}{m.key === key ? ' · 当前' : ''}</Text>
             </View>
-          </Pressable>
+          </Tappable>
         ))}
       </ScrollView>
 
+      <ScrollEdge height={barH} />
       <FloatBar onBack={() => router.back()} />
     </View>
   );
@@ -94,10 +97,14 @@ function when(ts: string | null): string {
 const styles = (t: Theme) =>
   StyleSheet.create({
     screen: { flex: 1, backgroundColor: t.c.bgTertiary },
-    scroll: { paddingTop: 56, paddingBottom: 20 },
+    scroll: {
+      paddingTop: 56, paddingBottom: 24,
+      width: '100%', maxWidth: t.layout.contentMaxW, alignSelf: 'center',
+    },
     row: {
-      flexDirection: 'row', alignItems: 'center', gap: 8,
-      paddingHorizontal: t.space.pad, paddingVertical: 10,
+      flexDirection: 'row', alignItems: 'center', gap: 10,
+      marginHorizontal: 8, paddingHorizontal: 10, paddingVertical: 11,
+      minHeight: 52, borderRadius: t.radius.lg,
     },
     dotSlot: { width: 16, alignItems: 'flex-start', paddingLeft: 3, alignSelf: 'flex-start', paddingTop: 6 },
     dot: { width: 8, height: 8, borderRadius: t.radius.full },

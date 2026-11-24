@@ -14,12 +14,13 @@ import { liveStates } from '../../runtime/live.js';
 import { subscribeTurns } from '../../runtime/bus.js';
 import { listQueue } from '../../runtime/queue.js';
 import { pendingAsk } from '../../ask/store.js';
+import { supportsLocalTerminal } from '../../agent/terminal.js';
 import { errorBody } from '../errors.js';
 
 // members 里含本机绝对路径，不能原样透给客户端
 function publicMember(m) {
   const { file, ...rest } = m;
-  return rest;
+  return { ...rest, supportsTerminal: supportsLocalTerminal(m) };
 }
 
 function publicTurn(turn) {

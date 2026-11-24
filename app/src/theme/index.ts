@@ -2,7 +2,7 @@ import { useSyncExternalStore } from 'react';
 import { Platform, useColorScheme } from 'react-native';
 import { useThemePref } from '../store/theme';
 import {
-  light, dark, fonts, size, weight, radius, space, z, hairline, floatShadow,
+  light, dark, fonts, size, weight, radius, space, layout, z, hairline, floatShadow,
   type Palette, type Shadow,
 } from './tokens';
 
@@ -14,6 +14,7 @@ export type Theme = {
   weight: typeof weight;
   radius: typeof radius;
   space: typeof space;
+  layout: typeof layout;
   z: typeof z;
   hairline: number;
   shadow: Shadow;
@@ -28,6 +29,7 @@ export function themeFor(isDark: boolean): Theme {
     weight,
     radius,
     space,
+    layout,
     z,
     hairline,
     shadow: isDark ? floatShadow.dark : floatShadow.light,

@@ -14,6 +14,52 @@ export function isSecureRequest(req) {
   return proto === 'https';
 }
 
+const LOOPBACK_IP = /^(?:127\.0\.0\.1|::1|::ffff:127\.0\.0\.1)$/i;
+const LOOPBACK_HOSTNAME = /^(?:127\.0\.0\.1|localhost|\[::1\]|::1)$/i;
+const LOOPBACK_HOST_HEADER = /^(?:127\.0\.0\.1|localhost|\[::1\])(?::\d{1,5})?$/i;
+const PROXY_HEADER_NAMES = new Set([
+  'forwarded',
+  'via',
+  'x-real-ip',
+  'cdn-loop',
+  'true-client-ip',
+]);
+
+function isProxyHeader(name) {
+  const lower = String(name).toLowerCase();
+  return PROXY_HEADER_NAMES.has(lower)
+    || lower.startsWith('x-forwarded-')
+    || lower.startsWith('cf-');
+}
+
+function isLoopbackUrl(raw) {
+  try {
+    const parsed = new URL(String(raw));
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false;
+    return LOOPBACK_HOSTNAME.test(parsed.hostname);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Determine whether the HTTP request came directly from a local loopback client
+ * on the host machine (excluding tunnels, reverse proxies, and LAN/Tailscale peers).
+ */
+export function isLocalRequest(req) {
+  const remote = String(req?.socket?.remoteAddress ?? '').trim();
+  if (!LOOPBACK_IP.test(remote)) return false;
+  const headers = req?.headers ?? {};
+  for (const [name, value] of Object.entries(headers)) {
+    if (value !== undefined && isProxyHeader(name)) return false;
+  }
+  const host = String(headers.host ?? '').trim();
+  if (!LOOPBACK_HOST_HEADER.test(host)) return false;
+  if (headers.origin !== undefined && !isLoopbackUrl(headers.origin)) return false;
+  if (headers.referer !== undefined && !isLoopbackUrl(headers.referer)) return false;
+  return true;
+}
+
 /**
  * 某个身份的会话凭据。由 token 派生，故守护进程重启后依然有效，且不暴露 token 本身。
  *

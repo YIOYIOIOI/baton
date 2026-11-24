@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState } from 'react';
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { useTheme, type Theme } from '@/theme';
-import { FloatBar, useFloatBarHeight } from '@/components/ui';
+import { FloatBar, Tappable, useFloatBarHeight } from '@/components/ui';
+import { ScrollEdge } from '@/components/ScrollEdge';
 import { Raw } from '@/components/stream';
 import { useConnection } from '@/store/connection';
 import type { EventFull } from '@/api/types';
@@ -55,13 +56,13 @@ export default function FullScreen() {
     <View style={s.screen}>
       <Stack.Screen options={{ headerShown: false }} />
 
-      <View style={[s.meta, { paddingTop: barH - 44 }]}>
+      <View style={[s.meta, { paddingTop: barH + 4 }]}>
         <Text style={s.n}>{num(meta?.totalChars ?? 0)}</Text>
         <Text style={s.unit}>字</Text>
         <Text style={s.cmd} numberOfLines={1}>{eventId}</Text>
       </View>
 
-      <ScrollView style={s.body} contentContainerStyle={{ paddingBottom: 30 }}>
+      <ScrollView style={s.body} contentContainerStyle={s.bodyContent}>
         {err ? <Text style={s.err}>{err}</Text> : null}
         <View style={s.pre}><Raw text={text} /></View>
 
@@ -71,16 +72,17 @@ export default function FullScreen() {
         </Text>
 
         {left > 0 ? (
-          <Pressable style={s.more} onPress={() => loadFrom(text.length)} disabled={busy}>
+          <Tappable style={s.more} onPress={() => loadFrom(text.length)} disabled={busy} accessibilityRole="button">
             {busy
               ? <ActivityIndicator color={t.c.txTertiary} />
               : <Text style={s.moreTx}>再载入 {num(Math.min(CHUNK, left))} 字</Text>}
-          </Pressable>
+          </Tappable>
         ) : null}
 
         {busy && !text ? <ActivityIndicator color={t.c.txTertiary} style={{ marginTop: 30 }} /> : null}
       </ScrollView>
 
+      <ScrollEdge height={barH} />
       <FloatBar onBack={() => router.back()} />
     </View>
   );
@@ -93,7 +95,8 @@ const styles = (t: Theme) =>
     screen: { flex: 1, backgroundColor: t.c.bgTertiary },
     meta: {
       flexDirection: 'row', alignItems: 'baseline', gap: 8,
-      paddingTop: 52, paddingHorizontal: t.space.pad, paddingBottom: 8,
+      paddingTop: 52, paddingHorizontal: t.space.pad, paddingBottom: 10,
+      width: '100%', maxWidth: t.layout.contentMaxW, alignSelf: 'center',
     },
     n: {
       fontWeight: t.weight.bold, color: t.c.txPrimary, fontSize: t.size.xs,
@@ -102,6 +105,10 @@ const styles = (t: Theme) =>
     unit: { fontSize: t.size.xs, color: t.c.txTertiary, fontFamily: t.fonts.sans },
     cmd: { flex: 1, fontFamily: t.fonts.mono, fontSize: t.size.xs, color: t.c.txTertiary },
     body: { flex: 1, backgroundColor: t.c.bgSecondary },
+    bodyContent: {
+      paddingBottom: 32,
+      width: '100%', maxWidth: t.layout.contentMaxW, alignSelf: 'center',
+    },
     pre: { paddingHorizontal: t.space.pad, paddingTop: 14 },
     note: {
       paddingHorizontal: t.space.pad, paddingTop: 12,

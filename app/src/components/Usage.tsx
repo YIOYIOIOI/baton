@@ -137,7 +137,14 @@ export function UsageBar({ left, height = 6 }: { left: number; height?: number }
   const shown = left === 0 ? 0 : Math.max(left, 1.5);
   return (
     <View
-      style={[bar.track, { height, borderRadius: height / 2, backgroundColor: t.c.bdTertiary }]}
+      style={[
+        bar.track,
+        {
+          height,
+          borderRadius: height / 2,
+          backgroundColor: t.isDark ? 'rgba(255,255,255,0.10)' : 'rgba(34,33,31,0.08)',
+        },
+      ]}
       accessibilityRole="progressbar"
       accessibilityValue={{ min: 0, max: 100, now: left }}
     >

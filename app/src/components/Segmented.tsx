@@ -1,6 +1,6 @@
 import SegmentedControl from '@react-native-segmented-control/segmented-control';
 import { useEffect, useState } from 'react';
-import { StyleSheet, View } from 'react-native';
+import { Platform, StyleSheet, View } from 'react-native';
 import { useTheme } from '@/theme';
 import * as haptics from '@/feedback/haptics';
 
@@ -120,8 +120,35 @@ export function Segmented<T extends string>({
   const [optimistic, setOptimistic] = useState(index);
   useEffect(() => setOptimistic(index), [index]);
 
+  const isWeb = Platform.OS === 'web';
+  const trackH = height ?? (isWeb ? 38 : undefined);
+  const trackRadius = height !== undefined ? Math.round(height / 2) : 12;
+  const insetY = 3;
+  const hasWebBorder = isWeb && !transparent;
+  const innerW = hasWebBorder ? Math.max(0, width - 2) : width;
+  const innerH = hasWebBorder && trackH !== undefined ? trackH - 2 : trackH;
+  const innerRadius = hasWebBorder ? Math.max(8, trackRadius - 1) : trackRadius;
+  const sliderRadius = Math.max(8, innerRadius - insetY);
+  const webBg = transparent
+    ? 'transparent'
+    : (t.isDark ? 'rgba(255,255,255,0.065)' : 'rgba(34,33,31,0.055)');
+  const webTint = t.isDark ? 'rgba(255,255,255,0.14)' : '#ffffff';
+
   return (
-    <View style={[styles.wrap, { width }, height === undefined ? null : { height }]}>
+    <View
+      style={[
+        styles.wrap,
+        { width },
+        trackH === undefined ? null : { height: trackH },
+        // 非透明轨道的外描边画在外层：SegmentedControl 内部按 outer layout.width 算每格宽，
+        // 描边加在控件自身上会让末格右侧空隙被压掉 2px。
+        hasWebBorder && {
+          borderRadius: trackRadius,
+          borderWidth: 1,
+          borderColor: t.isDark ? 'rgba(255,255,255,0.07)' : 'rgba(34,33,31,0.06)',
+        },
+      ]}
+    >
       <SegmentedControl
         values={items.map(([, label]) => label)}
         selectedIndex={optimistic}
@@ -135,14 +162,39 @@ export function Segmented<T extends string>({
         // 跟着 App 自己的深浅走，不让系统按环境光猜——Baton 的调色板是暖米白，
         // 系统判断出来的冷色调会和它打架（和 Glass 那边同一个理由）
         appearance={t.isDark ? 'dark' : 'light'}
-        {...(transparent ? { backgroundColor: 'transparent' } : {})}
-        fontStyle={{ color: t.c.txSecondary, fontFamily: t.fonts.sans }}
+        {...(isWeb
+          ? { backgroundColor: webBg, tintColor: webTint }
+          : (transparent ? { backgroundColor: 'transparent' } : {}))}
+        fontStyle={{
+          color: t.c.txSecondary,
+          fontFamily: t.fonts.sans,
+          ...(isWeb ? { fontSize: height && height >= 46 ? 15 : 13.5, fontWeight: '500' as const } : null),
+        }}
         activeFontStyle={{
           color: t.c.txPrimary,
           fontFamily: t.fonts.sans,
           fontWeight: t.weight.bold,
+          ...(isWeb ? { fontSize: height && height >= 46 ? 15 : 13.5 } : null),
         }}
-        style={height === undefined ? undefined : { height }}
+        style={isWeb
+          ? {
+            width: innerW,
+            height: innerH,
+            borderRadius: innerRadius,
+          }
+          : (height === undefined ? undefined : { height })}
+        sliderStyle={isWeb
+          ? ({
+            borderRadius: sliderRadius,
+            top: insetY,
+            bottom: insetY,
+            borderWidth: 1,
+            borderColor: t.isDark ? 'rgba(255,255,255,0.10)' : 'rgba(34,33,31,0.06)',
+            boxShadow: t.isDark
+              ? '0 2px 8px rgba(0,0,0,0.36), inset 0 1px 0 rgba(255,255,255,0.10)'
+              : '0 2px 8px -1px rgba(22,22,28,0.10), 0 1px 2px rgba(22,22,28,0.06)',
+          } as never)
+          : undefined}
       />
     </View>
   );

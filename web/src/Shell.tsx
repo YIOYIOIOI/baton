@@ -13,6 +13,7 @@ import { Menu, Toasts, copyText, keyLabel, openPalette, openShortcuts, openUsage
 import { UsageDialog } from './Usage';
 import { Wordmark } from './Wordmark';
 import { DraftScope } from './drafts';
+import { CanOpenTerminalCtx, openSessionTerminal } from './terminal';
 import { draftScope, rememberBrowserScope } from '../../app/src/store/browserSession';
 import './workspace.css';
 
@@ -106,6 +107,7 @@ export function Shell({
   const [chains, setChains] = useState<Chain[] | null>(null);
   const [err, setErr] = useState<ApiError | null>(null);
   const [isOwner, setIsOwner] = useState(false);
+  const [canOpenTerminal, setCanOpenTerminal] = useState(false);
   const [scope, setScope] = useState<string | null | undefined>(undefined);
   const [closed, setClosed] = useState<Set<string>>(() => new Set());
   const [now, setNow] = useState(() => Date.now());
@@ -121,6 +123,7 @@ export function Shell({
       const next = draftScope(window.location.origin, h.principal.id, h.principal.generation);
       rememberBrowserScope(next);
       setIsOwner(h.principal.isOwner);
+      setCanOpenTerminal(Boolean(h.canOpenTerminal));
       setScope(next);
     }).catch(() => { if (active) setScope((previous) => previous ?? null); });
     void identify();
@@ -459,7 +462,7 @@ export function Shell({
               </div>
               <ul className="rows">
                 {waiting.map((m) => (
-                  <Row key={m.key} m={m} selected={m.key === selectedKey} now={now} showDir dup />
+                  <Row key={m.key} m={m} selected={m.key === selectedKey} now={now} showDir dup canOpenTerminal={canOpenTerminal} />
                 ))}
               </ul>
             </section>
@@ -474,7 +477,7 @@ export function Shell({
                   </span>
                 </div>
                 <ul className="rows">
-                  {s.items.map((m) => <Row key={m.key} m={m} selected={m.key === selectedKey} now={now} showDir />)}
+                  {s.items.map((m) => <Row key={m.key} m={m} selected={m.key === selectedKey} now={now} showDir canOpenTerminal={canOpenTerminal} />)}
                 </ul>
               </section>
             ))
@@ -528,6 +531,7 @@ export function Shell({
                             now={now}
                             thread={thread.length > 1 ? { head: i === 0, tail: i === thread.length - 1 } : null}
                             forkLabel={!!m.parentId && thread.length === 1}
+                            canOpenTerminal={canOpenTerminal}
                           />
                         )),
                       )}
@@ -593,7 +597,9 @@ export function Shell({
       <main className="stage">
         {children && scope !== undefined ? (
           <DraftScope.Provider value={scope} key={scope}>
-            <MembersCtx.Provider value={members}>{children}</MembersCtx.Provider>
+            <CanOpenTerminalCtx.Provider value={canOpenTerminal}>
+              <MembersCtx.Provider value={members}>{children}</MembersCtx.Provider>
+            </CanOpenTerminalCtx.Provider>
           </DraftScope.Provider>
         ) : (
           <div className="stage-empty">
@@ -605,7 +611,7 @@ export function Shell({
         )}
       </main>
 
-      {palette && <Palette members={members} current={selectedKey} isOwner={isOwner} onClose={() => setPalette(false)} />}
+      {palette && <Palette members={members} current={selectedKey} isOwner={isOwner} canOpenTerminal={canOpenTerminal} onClose={() => setPalette(false)} />}
       {keys && <ShortcutsDialog onClose={() => setKeys(false)} />}
       {usage && isOwner && <UsageDialog onClose={() => setUsage(false)} />}
       <Toasts />
@@ -620,7 +626,7 @@ export function Shell({
  * 「选中项滚进视野」找的是它在正文列表里的那一行。
  */
 function Row({
-  m, selected, now, showDir = false, thread = null, forkLabel = false, dup = false,
+  m, selected, now, showDir = false, thread = null, forkLabel = false, dup = false, canOpenTerminal = false,
 }: {
   m: Member;
   selected: boolean;
@@ -629,6 +635,7 @@ function Row({
   thread?: { head: boolean; tail: boolean } | null;
   forkLabel?: boolean;
   dup?: boolean;
+  canOpenTerminal?: boolean;
 }) {
   const href = `/session/${encodeURIComponent(m.key)}`;
   const gk = groupOf(m).key;
@@ -707,6 +714,9 @@ function Row({
         label={t('shell.sessionActions')}
         align="end"
         items={[
+          ...(canOpenTerminal && m.supportsTerminal
+            ? [{ label: t('shell.openTerminal'), onSelect: () => { void openSessionTerminal(m.key); } }]
+            : []),
           { label: t('shell.openNewTab'), onSelect: () => window.open(href, '_blank', 'noopener') },
           { label: t('shell.copyLink'), onSelect: () => copyText(new URL(href, window.location.origin).href, t('shell.copiedLink')) },
           { label: pinned ? t('shell.unpin') : t('shell.pinDir'), onSelect: () => togglePin(gk) },
@@ -774,6 +784,12 @@ export function Icon({ name, className }: { name: string; className?: string }) 
       <>
         <rect x="1.8" y="4" width="12.4" height="8" rx="1.8" />
         <path d="M4.4 6.6h.01M6.8 6.6h.01M9.2 6.6h.01M11.6 6.6h.01M5.2 9.4h5.6" />
+      </>
+    ),
+    terminal: (
+      <>
+        <rect x="1.8" y="3" width="12.4" height="10" rx="2" />
+        <path d="m4.8 6.2 2.2 1.8-2.2 1.8M8.4 9.8h2.8" />
       </>
     ),
     sun: (

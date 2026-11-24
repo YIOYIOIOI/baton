@@ -20,12 +20,15 @@
 }
 
 .toast {
+  max-width: min(460px, calc(100vw - 32px));
   padding: 8px 16px;
-  border-radius: 999px;
+  border-radius: 18px;
   background: var(--bg-inverse);
   color: var(--tx-inverse);
   font-size: 13px;
   font-weight: 600;
+  line-height: 1.45;
+  text-align: center;
   box-shadow: var(--lift-2);
   animation: toast-in var(--t-layout) var(--spring-soft) both;
 }

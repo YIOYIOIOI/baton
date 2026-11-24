@@ -10,7 +10,7 @@ import {
   IconRight, IconSearch, IconShare, IconSort, IconTick,
 } from '@/icons';
 import { FloatBar, PillGlass, Tappable, useFloatBarHeight, useHydrated } from '@/components/ui';
-import { Glass } from '@/components/Glass';
+import { Glass, useGlassPath } from '@/components/Glass';
 import { ScrollEdge } from '@/components/ScrollEdge';
 import * as haptics from '@/feedback/haptics';
 import { useReduceMotion } from '@/a11y/motion';
@@ -78,6 +78,7 @@ function FilesBody() {
   const [busy, setBusy] = useState(() => !cachedListing(key, path));
   const [refreshing, setRefreshing] = useState(false);
   const [filter, setFilter] = useState('');
+  const [searchFocus, setSearchFocus] = useState(false);
   const [sort, setSort] = useState<SortKey>('name');
   const [now, setNow] = useState(() => Date.now());
   /** 正在下载第几个 / 共几个。null = 没在下载 */
@@ -224,12 +225,14 @@ function FilesBody() {
       )}
 
       <View style={s.tools}>
-        <View style={s.search}>
+        <View style={[s.search, searchFocus && s.searchFocus]}>
           {/* 包一层不让它被挤：网页上 TextInput 自带固有宽度，flex 行里 svg 会被压成几个像素 */}
-          <View style={s.searchIcon}><IconSearch size={15} color={t.c.txTertiary} /></View>
+          <View style={s.searchIcon}><IconSearch size={15} color={searchFocus ? t.c.coral : t.c.txTertiary} /></View>
           <TextInput
             value={filter}
             onChangeText={setFilter}
+            onFocus={() => setSearchFocus(true)}
+            onBlur={() => setSearchFocus(false)}
             placeholder={`在「${title}」里筛选`}
             placeholderTextColor={t.c.txTertiary}
             style={s.searchInput}
@@ -321,7 +324,7 @@ function FilesBody() {
           ListHeaderComponent={listHeader}
           ListEmptyComponent={empty}
           ListFooterComponent={footer}
-          contentContainerStyle={{ paddingTop: barH, paddingBottom: bottomPad }}
+          contentContainerStyle={[s.listContent, { paddingTop: barH, paddingBottom: bottomPad }]}
           keyboardDismissMode="on-drag"
           keyboardShouldPersistTaps="handled"
           initialNumToRender={20}
@@ -345,16 +348,19 @@ function FilesBody() {
       />
 
       {selecting ? (
-        <SelectBar
-          t={t}
-          n={pickedN}
-          taking={taking}
-          note={note}
-          bottom={inset.bottom}
-          reduceMotion={reduceMotion}
-          onClearAll={() => useFilePick.setState({ picked: {} })}
-          onTake={() => void take()}
-        />
+        <>
+          <ScrollEdge edge="bottom" height={Math.max(12, inset.bottom) + 78} />
+          <SelectBar
+            t={t}
+            n={pickedN}
+            taking={taking}
+            note={note}
+            bottom={inset.bottom}
+            reduceMotion={reduceMotion}
+            onClearAll={() => useFilePick.setState({ picked: {} })}
+            onTake={() => void take()}
+          />
+        </>
       ) : null}
     </View>
   );
@@ -417,6 +423,7 @@ function SelectBar({
   onClearAll: () => void; onTake: () => void;
 }) {
   const s = styles(t);
+  const glassPath = useGlassPath();
   // 从底下升上来一小段。减弱动效下只淡入
   const [v] = useState(() => new Animated.Value(0));
   useEffect(() => {
@@ -432,7 +439,7 @@ function SelectBar({
       ]}
       pointerEvents="box-none"
     >
-      <Glass radius={26} style={[s.selInner, t.shadow]}>
+      <Glass radius={26} style={[s.selInner, glassPath === 'opaque' && t.shadow]}>
         <View style={s.selText}>
           <Text style={s.selN} numberOfLines={1}>
             {taking ? `正在取 ${taking.done}/${taking.total}` : n ? `已选 ${n} 项` : '点行勾选，文件夹也能勾'}
@@ -465,9 +472,14 @@ function SelectBar({
 const styles = (t: Theme) =>
   StyleSheet.create({
     screen: { flex: 1, backgroundColor: t.c.bgTertiary },
+    listContent: {
+      width: '100%',
+      maxWidth: t.layout.contentMaxW,
+      alignSelf: 'center',
+    },
 
     title: {
-      fontFamily: t.fonts.sans, fontSize: t.size.xl, fontWeight: t.weight.bold, letterSpacing: -0.3,
+      fontFamily: t.fonts.sans, fontSize: t.size.xl, fontWeight: t.weight.bold, letterSpacing: -0.4,
       color: t.c.txPrimary, paddingHorizontal: t.space.pad, paddingTop: 6,
     },
     cwd: {
@@ -477,19 +489,23 @@ const styles = (t: Theme) =>
     crumbsWrap: { flexGrow: 0, marginTop: 2 },
     crumbs: { paddingHorizontal: t.space.pad - 6, alignItems: 'center' },
     crumbItem: { flexDirection: 'row', alignItems: 'center' },
-    // 每一段都是 32pt 高的命中区：字只有 13pt，按原样点不准
-    crumbHit: { minHeight: 32, justifyContent: 'center', paddingHorizontal: 6 },
+    // 每一段都是 34pt 高的命中区：字只有 13pt，按原样点不准
+    crumbHit: { minHeight: 34, justifyContent: 'center', paddingHorizontal: 6 },
     crumb: { fontFamily: t.fonts.sans, fontSize: t.size.xs, color: t.c.txInfo, maxWidth: 180 },
     crumbLast: { color: t.c.txTertiary },
 
     tools: {
       flexDirection: 'row', alignItems: 'center', gap: 8,
-      paddingHorizontal: t.space.pad, paddingTop: 10, paddingBottom: 8,
+      paddingHorizontal: t.space.pad, paddingTop: 12, paddingBottom: 10,
     },
     search: {
       flex: 1, flexDirection: 'row', alignItems: 'center', gap: 7,
-      height: 38, borderRadius: t.radius.lg, paddingLeft: 11, paddingRight: 4,
+      height: 42, borderRadius: 13, paddingLeft: 12, paddingRight: 4,
       backgroundColor: t.c.bgSecondary,
+      borderWidth: t.hairline, borderColor: t.c.bdTertiary,
+    },
+    searchFocus: {
+      borderColor: t.c.coral,
     },
     // 16pt 是 iOS Safari 不放大页面的下限——小一点，一点进去整页就被拉近
     searchIcon: { flexShrink: 0, width: 15, height: 15 },
@@ -497,13 +513,14 @@ const styles = (t: Theme) =>
       flex: 1, minWidth: 0, fontFamily: t.fonts.sans, fontSize: 16, color: t.c.txPrimary, paddingVertical: 0,
       ...(Platform.OS === 'web' ? { outlineStyle: 'none' as never } : null),
     },
-    searchClear: { width: 30, height: 30, alignItems: 'center', justifyContent: 'center' },
+    searchClear: { width: 34, height: 34, alignItems: 'center', justifyContent: 'center', borderRadius: t.radius.full },
     toolBtn: {
       flexDirection: 'row', alignItems: 'center', gap: 5,
-      height: 38, paddingHorizontal: 11, borderRadius: t.radius.lg, backgroundColor: t.c.bgSecondary,
+      height: 42, paddingHorizontal: 12, borderRadius: 13, backgroundColor: t.c.bgSecondary,
+      borderWidth: t.hairline, borderColor: t.c.bdTertiary,
     },
-    toolIcon: { width: 38, paddingHorizontal: 0, justifyContent: 'center' },
-    toolTx: { fontFamily: t.fonts.sans, fontSize: t.size.xs, color: t.c.txSecondary },
+    toolIcon: { width: 42, paddingHorizontal: 0, justifyContent: 'center' },
+    toolTx: { fontFamily: t.fonts.sans, fontSize: t.size.xs, fontWeight: '500', color: t.c.txSecondary },
 
     errBox: {
       marginHorizontal: t.space.pad, marginTop: 4, marginBottom: 6, padding: 12, gap: 8,
@@ -524,15 +541,16 @@ const styles = (t: Theme) =>
     },
     checkOn: { backgroundColor: t.c.coral, borderColor: t.c.coral },
     tile: {
-      width: 36, height: 36, borderRadius: 9,
+      width: 38, height: 38, borderRadius: 10,
       alignItems: 'center', justifyContent: 'center', backgroundColor: t.c.bgSecondary,
+      borderWidth: t.hairline, borderColor: t.c.bdTertiary,
     },
     // 分隔线画在文字区底下、从文字起始处开始——iOS 列表就是这样，图标那一列不切
     rowBody: {
       flex: 1, alignSelf: 'stretch', justifyContent: 'center', gap: 2,
       borderBottomWidth: t.hairline, borderBottomColor: t.c.bdTertiary,
     },
-    name: { fontFamily: t.fonts.sans, fontSize: t.size.md, color: t.c.txPrimary },
+    name: { fontFamily: t.fonts.sans, fontSize: 15.5, color: t.c.txPrimary },
     meta: { fontFamily: t.fonts.sans, fontSize: 12.5, color: t.c.txTertiary, fontVariant: ['tabular-nums'] },
 
     emptyBox: { alignItems: 'center', gap: 10, paddingTop: 56 },
@@ -542,8 +560,12 @@ const styles = (t: Theme) =>
       textAlign: 'center', paddingVertical: 18,
     },
 
-    selBar: { position: 'absolute', left: 0, right: 0, bottom: 0, paddingHorizontal: 12, zIndex: t.z.dock },
+    selBar: {
+      position: 'absolute', left: 0, right: 0, bottom: 0, paddingHorizontal: 12, zIndex: t.z.dock,
+      alignItems: 'center',
+    },
     selInner: {
+      width: '100%', maxWidth: t.layout.contentMaxW,
       flexDirection: 'row', alignItems: 'center', gap: 10,
       minHeight: 56, paddingLeft: 18, paddingRight: 7, paddingVertical: 7,
     },

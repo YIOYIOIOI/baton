@@ -62,9 +62,13 @@ export default function RootLayout() {
 
   useEffect(() => {
     if (Platform.OS !== 'web') return;
-    document.documentElement.style.setProperty('--baton-page-background', t.c.bgTertiary);
-    document.documentElement.style.colorScheme = t.isDark ? 'dark' : 'light';
-  }, [t.c.bgTertiary, t.isDark]);
+    const root = document.documentElement.style;
+    root.setProperty('--baton-page-background', t.c.bgTertiary);
+    root.setProperty('--baton-sb', t.c.sb);
+    root.setProperty('--baton-ring', t.c.ring);
+    root.setProperty('--baton-accent', t.c.coral);
+    root.colorScheme = t.isDark ? 'dark' : 'light';
+  }, [t.c.bgTertiary, t.c.sb, t.c.ring, t.c.coral, t.isDark]);
 
   useEffect(() => {
     boot();

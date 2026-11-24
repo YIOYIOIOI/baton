@@ -1,9 +1,9 @@
 import { useState } from 'react';
-import { Image, Pressable, StyleSheet, Text, View, type LayoutChangeEvent } from 'react-native';
+import { Image, StyleSheet, Text, View, type LayoutChangeEvent } from 'react-native';
 import { Stack, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme, type Theme } from '@/theme';
-import { PillDark } from '@/components/ui';
+import { PillDark, Tappable } from '@/components/ui';
 import { useLocale } from '@/i18n';
 import { useConnection } from '@/store/connection';
 
@@ -86,7 +86,9 @@ export default function WelcomeScreen() {
 
       {k > 0 ? (
         <Image
-          source={require('@/assets/images/handoff.png')}
+          source={t.isDark
+            ? require('@/assets/images/handoff-dark.png')
+            : require('@/assets/images/handoff.png')}
           style={[s.art, {
             width: artW,
             height: Math.round(artW * ART_RATIO),
@@ -98,14 +100,14 @@ export default function WelcomeScreen() {
         />
       ) : null}
 
-      <Pressable
+      <Tappable
         style={[s.langBtn, { top: Math.max(14, inset.top + 8), right: 18 }]}
         onPress={() => setPref(isEn ? 'zh' : 'en')}
         accessibilityRole="button"
         accessibilityLabel={trNew('lang.label')}
       >
         <Text style={s.langTx}>{isEn ? '中文' : 'EN'}</Text>
-      </Pressable>
+      </Tappable>
 
       {/*
         上边距取两者的较大值：设计稿的位置优先，但绝不进刘海/灵动岛。
@@ -148,9 +150,11 @@ const styles = (t: Theme) =>
     screen: { flex: 1, backgroundColor: t.c.bgTertiary, overflow: 'hidden' },
     langBtn: {
       position: 'absolute', zIndex: 2,
-      minHeight: 34, paddingHorizontal: 12, borderRadius: t.radius.full,
-      backgroundColor: t.c.bgPrimary, borderWidth: t.hairline, borderColor: t.c.bdSecondary,
+      minHeight: 38, minWidth: 44, paddingHorizontal: 14, borderRadius: t.radius.full,
+      backgroundColor: t.c.bgPrimary, borderWidth: 1,
+      borderColor: t.isDark ? 'rgba(255,255,255,0.16)' : t.c.bdTertiary,
       justifyContent: 'center', alignItems: 'center',
+      ...t.shadow,
     },
     langTx: { fontFamily: t.fonts.sans, fontSize: t.size.xs, fontWeight: t.weight.bold, color: t.c.txSecondary },
     // 宽高与 top/left 都由组件按 k 算好传进来，这里只留定位方式。

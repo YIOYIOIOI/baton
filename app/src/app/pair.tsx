@@ -1,13 +1,13 @@
 import { useEffect, useState } from 'react';
 import {
-  ActivityIndicator, KeyboardAvoidingView, Platform, Pressable, ScrollView,
-  StyleSheet, Text, TextInput, View,
+  ActivityIndicator, KeyboardAvoidingView, Platform, ScrollView,
+  StyleSheet, Text, TextInput, View, type TextStyle,
 } from 'react-native';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme, type Theme } from '@/theme';
 import { IconCamera } from '@/icons';
-import { useFloatBarHeight } from '@/components/ui';
+import { Tappable, useFloatBarHeight } from '@/components/ui';
 import { pageOrigin, useConnection } from '@/store/connection';
 import { BatonError, LinkError } from '@/api/client';
 import { linkInfo } from '@/components/Notice';
@@ -107,14 +107,14 @@ export default function PairScreen() {
   return (
     <KeyboardAvoidingView style={s.screen} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
       <Stack.Screen options={{ headerShown: false }} />
-      <Pressable
+      <Tappable
         style={[s.langBtn, { top: Math.max(14, inset.top + 8) }]}
         onPress={() => setPref(isEn ? 'zh' : 'en')}
         accessibilityRole="button"
         accessibilityLabel={trNew('lang.label')}
       >
         <Text style={s.langTx}>{isEn ? '中文' : 'EN'}</Text>
-      </Pressable>
+      </Tappable>
       <ScrollView contentContainerStyle={[s.pair, { paddingTop: barH }]} keyboardShouldPersistTaps="handled">
         {/*
           字标，不是 Claude 的 spike。原来那颗蓝星是 Claude Code 的标记——
@@ -130,7 +130,7 @@ export default function PairScreen() {
 
         {isWeb ? null : (
           <TextInput
-            style={s.host}
+            style={[s.host, NO_OUTLINE]}
             value={url}
             onChangeText={setUrl}
             placeholder={en('pair.hostPlaceholder')}
@@ -145,7 +145,8 @@ export default function PairScreen() {
         <TextInput
           style={[
             s.codeIn,
-            focus && { borderColor: t.c.coral },
+            NO_OUTLINE,
+            focus && { borderColor: t.c.coral, backgroundColor: t.c.bgPrimary },
             (err || otherOrigin) && { borderColor: t.c.txDanger },
           ]}
           value={code}
@@ -179,24 +180,26 @@ export default function PairScreen() {
         {/* 扫码是主路径，打字是备选——12 个字符在手机上打起来很烦，
             而且 iOS 上从主屏应用里扫是**唯一**可行的扫码方式：
             用系统相机扫会在 Safari 里配对，而那份凭据主屏应用看不到。 */}
-        <Pressable
+        <Tappable
           style={s.scan}
           onPress={() => { setErr(null); setScanning(true); }}
           disabled={busy}
+          haptic={haptics.tap}
           accessibilityRole="button"
         >
           <IconCamera size={19} color={t.c.txInverse} />
           <Text style={s.scanTx}>{isEn ? en('pair.scan') : '扫码配对'}</Text>
-        </Pressable>
+        </Tappable>
 
-        <Pressable
-          style={[s.go, !ready || busy ? { opacity: 0.35 } : null]}
+        <Tappable
+          style={s.go}
           onPress={go}
           disabled={!ready || busy}
+          haptic={haptics.tap}
           accessibilityRole="button"
         >
           {busy ? <ActivityIndicator color={t.c.txPrimary} /> : <Text style={s.goTx}>{isEn ? en('pair.submit') : '用上面的码配对'}</Text>}
-        </Pressable>
+        </Tappable>
 
         <Text style={s.foot}>
           {isEn ? (
@@ -248,13 +251,15 @@ function normalizeCode(v: string | string[] | undefined): string {
   return String(raw ?? '').toUpperCase().replace(/[^A-Z2-9]/g, '').slice(0, 12);
 }
 
+const NO_OUTLINE = Platform.OS === 'web' ? ({ outlineStyle: 'none' } as unknown as TextStyle) : null;
+
 const styles = (t: Theme) =>
   StyleSheet.create({
     screen: { flex: 1, backgroundColor: t.c.bgTertiary },
     langBtn: {
       position: 'absolute', top: 18, right: 18, zIndex: 2,
-      minHeight: 34, paddingHorizontal: 12, borderRadius: t.radius.full,
-      backgroundColor: t.c.bgSecondary, borderWidth: t.hairline, borderColor: t.c.bdSecondary,
+      minHeight: 38, minWidth: 44, paddingHorizontal: 14, borderRadius: t.radius.full,
+      backgroundColor: t.c.bgSecondary, borderWidth: t.hairline, borderColor: t.c.bdTertiary,
       justifyContent: 'center', alignItems: 'center',
     },
     langTx: { fontFamily: t.fonts.sans, fontSize: t.size.xs, fontWeight: t.weight.bold, color: t.c.txSecondary },
@@ -263,49 +268,52 @@ const styles = (t: Theme) =>
     // 其中一处就是这儿。
     pair: {
       flexGrow: 1, justifyContent: 'center',
-      paddingHorizontal: t.space.pad, paddingBottom: t.space.pad,
-      gap: 16, alignItems: 'center',
+      paddingHorizontal: t.space.pad, paddingBottom: 32,
+      gap: 14, alignItems: 'center',
+      width: '100%', maxWidth: 400, alignSelf: 'center',
     },
     brand: {
       fontFamily: t.fonts.sans, fontSize: 34, fontWeight: t.weight.bold,
       letterSpacing: -1.2, color: t.c.txPrimary, marginBottom: 2,
     },
     h1: {
-      fontFamily: t.fonts.serif, fontSize: t.size.xl, lineHeight: 32,
+      fontFamily: t.fonts.serif, fontSize: t.size.xl, lineHeight: 34,
       letterSpacing: -0.4, textAlign: 'center', color: t.c.txPrimary,
     },
     lede: {
       color: t.c.txSecondary, fontSize: t.size.sm, lineHeight: 24,
-      textAlign: 'center', fontFamily: t.fonts.sans,
+      textAlign: 'center', fontFamily: t.fonts.sans, marginBottom: 4,
     },
     host: {
-      width: '100%', minHeight: t.space.tap,
+      width: '100%', minHeight: 48,
       backgroundColor: t.c.bgSecondary, borderRadius: t.radius.lg,
-      paddingHorizontal: 16, fontSize: t.size.sm, color: t.c.txSecondary,
+      borderWidth: t.hairline, borderColor: t.c.bdTertiary,
+      paddingHorizontal: 16, fontSize: t.size.md, color: t.c.txPrimary,
       fontFamily: t.fonts.mono, textAlign: 'center',
     },
     codeIn: {
       width: '100%',
-      fontFamily: t.fonts.mono, fontSize: 24, letterSpacing: 6.7, textAlign: 'center',
-      paddingVertical: 16, paddingHorizontal: 10,
-      borderRadius: t.radius.xl, borderWidth: 2, borderColor: 'transparent',
+      fontFamily: t.fonts.mono, fontSize: 21, letterSpacing: 4.5, textAlign: 'center',
+      fontVariant: ['tabular-nums'],
+      paddingVertical: 16, paddingHorizontal: 12, minHeight: 58,
+      borderRadius: t.radius.xl, borderWidth: 1.5, borderColor: t.c.bdTertiary,
       backgroundColor: t.c.bgSecondary, color: t.c.txPrimary,
     },
     errBox: { alignSelf: 'stretch' },
     err: { fontSize: t.size.xs, lineHeight: 19, color: t.c.txDanger, textAlign: 'center', fontFamily: t.fonts.sans },
     errFix: { fontSize: t.size.xs, lineHeight: 19, color: t.c.txSecondary, textAlign: 'center', marginTop: 3, fontFamily: t.fonts.sans },
     scan: {
-      width: '100%', minHeight: t.space.tap, borderRadius: t.radius.full,
-      backgroundColor: t.c.bgInverse,
+      width: '100%', minHeight: 50, borderRadius: t.radius.full,
+      backgroundColor: t.c.bgInverse, marginTop: 4,
       flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 9,
     },
     scanTx: { color: t.c.txInverse, fontSize: t.size.md, fontWeight: t.weight.bold, fontFamily: t.fonts.sans },
     go: {
-      width: '100%', minHeight: t.space.tap, borderRadius: t.radius.full,
-      backgroundColor: 'transparent', borderWidth: t.hairline, borderColor: t.c.bdSecondary,
+      width: '100%', minHeight: 48, borderRadius: t.radius.full,
+      backgroundColor: 'transparent', borderWidth: 1, borderColor: t.c.bdTertiary,
       alignItems: 'center', justifyContent: 'center',
     },
-    goTx: { color: t.c.txPrimary, fontSize: t.size.sm, fontFamily: t.fonts.sans },
-    foot: { fontSize: 13, color: t.c.txTertiary, lineHeight: 20, textAlign: 'center', fontFamily: t.fonts.sans },
-    mono: { fontFamily: t.fonts.mono },
+    goTx: { color: t.c.txPrimary, fontSize: t.size.sm, fontWeight: '500', fontFamily: t.fonts.sans },
+    foot: { fontSize: 13, color: t.c.txTertiary, lineHeight: 21, textAlign: 'center', fontFamily: t.fonts.sans, marginTop: 6 },
+    mono: { fontFamily: t.fonts.mono, color: t.c.txSecondary },
   });
