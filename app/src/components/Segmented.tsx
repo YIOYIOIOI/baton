@@ -123,7 +123,7 @@ export function Segmented<T extends string>({
   const isWeb = Platform.OS === 'web';
   const trackH = height ?? (isWeb ? 38 : undefined);
   const trackRadius = height !== undefined ? Math.round(height / 2) : 12;
-  const insetY = height !== undefined && height >= 46 ? 3 : 3;
+  const insetY = 3;
   const hasWebBorder = isWeb && !transparent;
   const innerW = hasWebBorder ? Math.max(0, width - 2) : width;
   const innerH = hasWebBorder && trackH !== undefined ? trackH - 2 : trackH;

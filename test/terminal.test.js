@@ -19,6 +19,7 @@ import {
   findPosixBinary,
   findWindowsPowerShell,
   hasControlChars,
+  isAbsoluteSessionCwd,
   launchLocalTerminal,
   posixQuote,
   resolveSessionCwd,
@@ -87,11 +88,12 @@ test('isLocalRequest 仅放行本机回环直连，拒绝代理、隧道与非�
   assert.equal(isLocalRequest(fakeReq({ remote: '192.168.1.25', headers: { host: '127.0.0.1:3002' } })), false);
   assert.equal(isLocalRequest(fakeReq({ remote: '100.80.1.2', headers: { host: 'localhost:3002' } })), false);
 
-  // 经由 Cloudflare Tunnel 或反向代理转发到 127.0.0.1
+  // 经由 Cloudflare Tunnel 或反向代理转发到 127.0.0.1（包含 x-forwarded-* / cf-* 前缀匹配）
   for (const header of [
     'forwarded', 'via', 'x-forwarded-for', 'x-forwarded-host', 'x-forwarded-port',
-    'x-forwarded-proto', 'x-forwarded-server', 'x-real-ip', 'cf-connecting-ip',
-    'cf-ray', 'cf-visitor', 'cdn-loop', 'true-client-ip',
+    'x-forwarded-proto', 'x-forwarded-server', 'x-forwarded-prefix', 'x-real-ip',
+    'cf-connecting-ip', 'cf-ray', 'cf-visitor', 'cf-ipcountry', 'cf-worker',
+    'cdn-loop', 'true-client-ip',
   ]) {
     assert.equal(
       isLocalRequest(fakeReq({ remote: '127.0.0.1', headers: { host: '127.0.0.1:3002', [header]: '203.0.113.10' } })),
@@ -140,14 +142,24 @@ test('detectAntigravityProduct、supportsLocalTerminal 与 buildInteractiveAgent
     'antigravity-cli',
   );
 
-  assert.equal(supportsLocalTerminal(claude), true);
-  assert.equal(supportsLocalTerminal(codex), true);
-  assert.equal(supportsLocalTerminal(agCli), true);
-  assert.equal(supportsLocalTerminal(agDesk), false);
-  assert.equal(supportsLocalTerminal(agIde), false);
-  assert.equal(supportsLocalTerminal({ ...claude, cwd: null }), false);
-  assert.equal(supportsLocalTerminal({ ...claude, cwd: '/repo/\x03evil' }), false);
-  assert.equal(supportsLocalTerminal({ ...claude, providerId: 'not-a-uuid' }), false);
+  assert.equal(supportsLocalTerminal(claude, 'linux'), true);
+  assert.equal(supportsLocalTerminal(codex, 'linux'), true);
+  assert.equal(supportsLocalTerminal(agCli, 'linux'), true);
+  assert.equal(supportsLocalTerminal(agDesk, 'linux'), false);
+  assert.equal(supportsLocalTerminal(agIde, 'linux'), false);
+  assert.equal(supportsLocalTerminal({ ...claude, cwd: null }, 'linux'), false);
+  assert.equal(supportsLocalTerminal({ ...claude, cwd: '.' }, 'linux'), false);
+  assert.equal(supportsLocalTerminal({ ...claude, cwd: 'subdir' }, 'linux'), false);
+  assert.equal(supportsLocalTerminal({ ...claude, cwd: '/repo/\x03evil' }, 'linux'), false);
+  assert.equal(supportsLocalTerminal({ ...claude, providerId: 'not-a-uuid' }, 'linux'), false);
+
+  // Windows 下必须拒绝相对路径、无盘符根相对路径（\foo / /foo）与盘符相对路径（C:foo）
+  assert.equal(supportsLocalTerminal({ ...claude, cwd: 'C:\\repo' }, 'win32'), true);
+  assert.equal(supportsLocalTerminal({ ...claude, cwd: '\\\\server\\share\\repo' }, 'win32'), true);
+  for (const badCwd of ['.', 'subdir', '\\foo', '/foo', 'C:foo']) {
+    assert.equal(isAbsoluteSessionCwd(badCwd, 'win32'), false, `win32 必须拒绝 ${badCwd}`);
+    assert.equal(supportsLocalTerminal({ ...claude, cwd: badCwd }, 'win32'), false, `win32 supportsLocalTerminal 必须拒绝 ${badCwd}`);
+  }
 
   assert.deepEqual(buildInteractiveAgentCommand(claude), { cli: 'claude', args: ['--resume', CLAUDE_ID], sessionId: CLAUDE_ID, model: null, effort: null });
   assert.deepEqual(buildInteractiveAgentCommand(codex), { cli: 'codex', args: ['resume', CODEX_ID], sessionId: CODEX_ID, model: null, effort: null });
@@ -250,9 +262,28 @@ test('标题净化（含前导短横线）、控制字符检查、Win32/POSIX �
   assert.equal(win32QuoteArg('C:\\Program Files\\a "b"\\'), '"C:\\Program Files\\a \\"b\\"\\\\"');
   assert.equal(posixQuote("/tmp/it's $(rm -rf) `id`"), "'/tmp/it'\\''s $(rm -rf) `id`'");
 
-  assert.throws(() => resolveSessionCwd('/tmp/bad\x03dir'), (err) => (
+  let realpathTouched = false;
+  const untouchedFs = {
+    realpathSync: { native: (p) => { realpathTouched = true; return p; } },
+    statSync: () => ({ isDirectory: () => true }),
+  };
+  assert.throws(() => resolveSessionCwd('/tmp/bad\x03dir', untouchedFs, 'linux'), (err) => (
     err instanceof TerminalLaunchError && err.code === 'invalid_cwd'
   ));
+  for (const badCwd of ['.', 'subdir', '\\foo', '/foo', 'C:foo']) {
+    assert.throws(() => resolveSessionCwd(badCwd, untouchedFs, 'win32'), (err) => (
+      err instanceof TerminalLaunchError && err.code === 'invalid_cwd'
+    ), `win32 resolveSessionCwd 必须拒绝 ${badCwd}`);
+  }
+  for (const badCwd of ['.', 'subdir', 'C:\\repo']) {
+    assert.throws(() => resolveSessionCwd(badCwd, untouchedFs, 'linux'), (err) => (
+      err instanceof TerminalLaunchError && err.code === 'invalid_cwd'
+    ), `linux resolveSessionCwd 必须拒绝 ${badCwd}`);
+  }
+  assert.equal(realpathTouched, false, '拒绝非法/相对路径时不得接触文件系统或退回 daemon process.cwd()');
+
+  const realTmp = tmpDir();
+  assert.equal(resolveSessionCwd(realTmp).toLowerCase(), fs.realpathSync.native(realTmp).replace(/^\\\\\?\\(?=[a-z]:[\\/])/i, '').toLowerCase());
 
   const cleaned = cleanTerminalEnv({
     PATH: '/usr/bin',
@@ -383,7 +414,7 @@ test('buildTerminalLaunchSpec 为 Windows、macOS 与 Linux 生成安全启动�
     agentArgs: ['--conversation', AG_CLI_ID],
     agent: 'antigravity',
     title: 'Mac task',
-    env: { HTTPS_PROXY: 'http://127.0.0.1:7890' },
+    env: { HTTPS_PROXY: 'http://127.0.0.1:7890', https_proxy: 'http://127.0.0.1:7891' },
     findPosixBin: () => '/usr/bin/osascript',
   });
   assert.equal(mac.terminal, 'Terminal.app');
@@ -392,8 +423,9 @@ test('buildTerminalLaunchSpec 为 Windows、macOS 与 Linux 生成安全启动�
   assert.equal(mac.options.shell, false);
   assert.deepEqual(mac.options.stdio, ['ignore', 'ignore', 'pipe']);
   const macCmd = mac.args.at(-1);
-  assert.ok(macCmd.startsWith("cd '/Users/dev/it'\\''s $(evil)' && 'env' '-u' 'CLAUDECODE' "));
+  assert.ok(macCmd.startsWith("cd -- '/Users/dev/it'\\''s $(evil)' && 'env' '-u' 'CLAUDECODE' "));
   assert.ok(macCmd.includes("'HTTPS_PROXY=http://127.0.0.1:7890'"));
+  assert.ok(macCmd.includes("'https_proxy=http://127.0.0.1:7891'"));
   assert.ok(macCmd.endsWith(`'/opt/homebrew/bin/agy' '--conversation' '${AG_CLI_ID}'`));
 
   // macOS 控制字符注入（如 Ctrl-C \x03）必须被拒绝
@@ -468,10 +500,11 @@ test('findLinuxTerminal 发现 PATH 中的终端并生成安全的 --title= 参�
 });
 
 test('launchLocalTerminal 自动读取 Baton 落盘的权限、模型与思考强度设置（含 defaultEffort）', async () => {
-  const cwd = tmpDir();
+  const cwd = 'C:\\work\\prefs-demo';
   const batonDir = tmpDir();
   const key = 'claude:demo-session';
   const member = { key, agent: 'claude', providerId: CLAUDE_ID, cwd, title: 'Prefs demo' };
+  const passWinCwd = (c) => c;
 
   fs.writeFileSync(path.join(batonDir, 'config.json'), JSON.stringify({
     permissionMode: { claude: 'bypass', codex: 'edits' },
@@ -497,6 +530,7 @@ test('launchLocalTerminal 自动读取 Baton 落盘的权限、模型与思考�
     batonDir,
     platform: 'win32',
     env: { SystemRoot: 'C:\\Windows' },
+    resolveCwd: passWinCwd,
     resolveBinary: async () => ({ executable: 'C:\\bin\\claude.exe', env: { SystemRoot: 'C:\\Windows' } }),
     findWinPowerShell: () => 'C:\\Program Files\\PowerShell\\7\\pwsh.exe',
     spawnFn: captureSpawn(firstRun),
@@ -516,6 +550,7 @@ test('launchLocalTerminal 自动读取 Baton 落盘的权限、模型与思考�
     batonDir,
     platform: 'win32',
     env: { SystemRoot: 'C:\\Windows' },
+    resolveCwd: passWinCwd,
     resolveBinary: async () => ({ executable: 'C:\\bin\\claude.exe', env: { SystemRoot: 'C:\\Windows' } }),
     findWinPowerShell: () => 'C:\\Program Files\\PowerShell\\7\\pwsh.exe',
     spawnFn: captureSpawn(secondRun),
@@ -538,6 +573,7 @@ test('launchLocalTerminal 自动读取 Baton 落盘的权限、模型与思考�
     batonDir,
     platform: 'win32',
     env: { SystemRoot: 'C:\\Windows' },
+    resolveCwd: passWinCwd,
     resolveBinary: async () => ({ executable: 'C:\\bin\\claude.exe', env: { SystemRoot: 'C:\\Windows' } }),
     findWinPowerShell: () => 'C:\\Program Files\\PowerShell\\7\\pwsh.exe',
     spawnFn: captureSpawn(thirdRun),
@@ -561,6 +597,7 @@ test('launchLocalTerminal 自动读取 Baton 落盘的权限、模型与思考�
     model: '',
     platform: 'win32',
     env: { SystemRoot: 'C:\\Windows' },
+    resolveCwd: passWinCwd,
     resolveBinary: async () => ({ executable: 'C:\\bin\\claude.exe', env: { SystemRoot: 'C:\\Windows' } }),
     findWinPowerShell: () => 'C:\\Program Files\\PowerShell\\7\\pwsh.exe',
     spawnFn: captureSpawn(fourthRun),
@@ -580,6 +617,7 @@ test('launchLocalTerminal 自动读取 Baton 落盘的权限、模型与思考�
     effort: null,
     platform: 'win32',
     env: { SystemRoot: 'C:\\Windows' },
+    resolveCwd: passWinCwd,
     resolveBinary: async () => ({ executable: 'C:\\bin\\claude.exe', env: { SystemRoot: 'C:\\Windows' } }),
     findWinPowerShell: () => 'C:\\Program Files\\PowerShell\\7\\pwsh.exe',
     spawnFn: captureSpawn(fifthRun),
@@ -595,6 +633,7 @@ test('launchLocalTerminal 自动读取 Baton 落盘的权限、模型与思考�
     batonDir,
     platform: 'win32',
     env: { SystemRoot: 'C:\\Windows' },
+    resolveCwd: passWinCwd,
     resolveBinary: async () => ({ executable: 'C:\\bin\\claude.exe', env: { SystemRoot: 'C:\\Windows' } }),
     findWinPowerShell: () => 'C:\\Program Files\\PowerShell\\7\\pwsh.exe',
     spawnFn: captureSpawn([]),
@@ -610,6 +649,7 @@ test('launchLocalTerminal 自动读取 Baton 落盘的权限、模型与思考�
     effort: 'ultra',
     platform: 'win32',
     env: { SystemRoot: 'C:\\Windows' },
+    resolveCwd: passWinCwd,
     resolveBinary: async () => ({ executable: 'C:\\bin\\codex.exe', env: { SystemRoot: 'C:\\Windows' } }),
     findWinPowerShell: () => 'C:\\Program Files\\PowerShell\\7\\pwsh.exe',
     spawnFn: captureSpawn(codexRun),
@@ -633,6 +673,7 @@ test('launchLocalTerminal 自动读取 Baton 落盘的权限、模型与思考�
     effort: 'high',
     platform: 'win32',
     env: { SystemRoot: 'C:\\Windows' },
+    resolveCwd: passWinCwd,
     resolveBinary: async () => ({ executable: 'C:\\bin\\agy.exe', env: { SystemRoot: 'C:\\Windows' } }),
     findWinPowerShell: () => 'C:\\Program Files\\PowerShell\\7\\pwsh.exe',
     spawnFn: captureSpawn(agRun),
@@ -644,8 +685,9 @@ test('launchLocalTerminal 自动读取 Baton 落盘的权限、模型与思考�
 });
 
 test('launchLocalTerminal 正确处理 Windows stdin、Linux 独立拉起、信号崩溃与 macOS 退出码', async () => {
-  const cwd = tmpDir();
-  const member = { agent: 'claude', providerId: CLAUDE_ID, cwd, title: 'Demo session' };
+  const winMember = { agent: 'claude', providerId: CLAUDE_ID, cwd: 'C:\\work\\demo', title: 'Demo session' };
+  const posixMember = { agent: 'claude', providerId: CLAUDE_ID, cwd: '/home/dev/demo', title: 'Demo session' };
+  const passCwd = (c) => c;
 
   // Windows 成功场景（校验 stdin 收到完整 JSON 载荷）
   let receivedStdin = '';
@@ -661,9 +703,10 @@ test('launchLocalTerminal 正确处理 Windows stdin、Linux 独立拉起、信�
     return child;
   };
   const winRes = await launchLocalTerminal({
-    member,
+    member: winMember,
     platform: 'win32',
     env: { SystemRoot: 'C:\\Windows' },
+    resolveCwd: passCwd,
     resolveBinary: async () => ({ executable: 'C:\\bin\\claude.exe', env: { SystemRoot: 'C:\\Windows' } }),
     findWinPowerShell: () => 'C:\\Program Files\\PowerShell\\7\\pwsh.exe',
     spawnFn: winOkSpawn,
@@ -681,9 +724,10 @@ test('launchLocalTerminal 正确处理 Windows stdin、Linux 独立拉起、信�
     return child;
   };
   const linRes = await launchLocalTerminal({
-    member,
+    member: posixMember,
     platform: 'linux',
     env: { DISPLAY: ':0' },
+    resolveCwd: passCwd,
     resolveBinary: async () => ({ executable: '/usr/local/bin/claude', env: { DISPLAY: ':0' } }),
     findLinTerminal: () => ({ name: 'kitty', bin: '/usr/bin/kitty', args: (_c, _t, cmd) => cmd }),
     spawnFn: linuxOkSpawn,
@@ -704,9 +748,10 @@ test('launchLocalTerminal 正确处理 Windows stdin、Linux 独立拉起、信�
     return child;
   };
   await assert.rejects(() => launchLocalTerminal({
-    member,
+    member: posixMember,
     platform: 'linux',
     env: { DISPLAY: ':0' },
+    resolveCwd: passCwd,
     resolveBinary: async () => ({ executable: '/usr/local/bin/claude', env: { DISPLAY: ':0' } }),
     findLinTerminal: () => ({ name: 'kitty', bin: '/usr/bin/kitty', args: (_c, _t, cmd) => cmd }),
     spawnFn: signalCrashSpawn,
@@ -725,9 +770,10 @@ test('launchLocalTerminal 正确处理 Windows stdin、Linux 独立拉起、信�
     return child;
   };
   await assert.rejects(() => launchLocalTerminal({
-    member,
+    member: posixMember,
     platform: 'darwin',
     env: {},
+    resolveCwd: passCwd,
     resolveBinary: async () => ({ executable: '/usr/local/bin/claude', env: {} }),
     findPosixBin: () => '/usr/bin/osascript',
     spawnFn: macFailSpawn,

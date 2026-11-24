@@ -98,14 +98,23 @@ export function detectAntigravityProduct(member) {
   return 'antigravity';
 }
 
+/** Verify a session working directory is a true absolute path (rejecting relative and Win32 root-relative paths). */
+export function isAbsoluteSessionCwd(cwd, platform = process.platform) {
+  if (typeof cwd !== 'string' || !cwd.trim()) return false;
+  if (hasControlChars(cwd)) return false;
+  if (platform === 'win32') {
+    return path.win32.isAbsolute(cwd) && path.win32.parse(cwd).root.length > 1;
+  }
+  return path.posix.isAbsolute(cwd);
+}
+
 /**
  * Whether this session can be resumed in an interactive local CLI terminal.
  * Claude Code, Codex, and Antigravity CLI (`agy`) support direct terminal resume;
  * Antigravity Desktop / IDE sessions are managed by the GUI app rather than `agy`.
  */
-export function supportsLocalTerminal(member) {
-  if (!member || typeof member.cwd !== 'string' || !member.cwd.trim()) return false;
-  if (hasControlChars(member.cwd)) return false;
+export function supportsLocalTerminal(member, platform = process.platform) {
+  if (!member || !isAbsoluteSessionCwd(member.cwd, platform)) return false;
   if (typeof member.providerId !== 'string' || !UUID.test(member.providerId)) return false;
   if (member.agent === 'claude' || member.agent === 'codex') return true;
   if (member.agent === 'antigravity') return detectAntigravityProduct(member) === 'antigravity-cli';
@@ -371,6 +380,14 @@ export function resolveSessionCwd(cwd, fsOps = fs, platform = process.platform) 
       400,
     );
   }
+  if (!isAbsoluteSessionCwd(cwd, platform)) {
+    throw new TerminalLaunchError(
+      'invalid_cwd',
+      '会话的工作目录不是有效的绝对路径，无法在本地终端打开。',
+      '请确认该会话记录了完整的绝对工作目录路径。',
+      400,
+    );
+  }
   try {
     const real = fsOps.realpathSync.native(cwd);
     const normalized = platform === 'win32' ? ordinaryWindowsPath(real) : real;
@@ -400,10 +417,10 @@ export function resolveSessionCwd(cwd, fsOps = fs, platform = process.platform) 
 /**
  * Resolve the host binary for `claude`, `codex`, or `agy` outside the session workspace.
  * @param {string} cli
- * @param {{ cwd?: string, env?: NodeJS.ProcessEnv, home?: string, platform?: NodeJS.Platform }} [opts]
+ * @param {{ cwd?: string | null, env?: NodeJS.ProcessEnv, home?: string, platform?: NodeJS.Platform }} [opts]
  */
 export async function resolveInteractiveBinary(cli, {
-  cwd = process.cwd(), env = process.env, home = os.homedir(), platform = process.platform,
+  cwd = null, env = process.env, home = os.homedir(), platform = process.platform,
 } = {}) {
   if (cli === 'agy') {
     const launch = agyLaunch({ cwd, env, home });
@@ -463,7 +480,7 @@ function buildDarwinShellCommand({ cwd, executable, agentArgs, agent, env }) {
     envArgs.push('-u', name);
   }
   if (agent === 'antigravity') {
-    for (const key of ['HTTPS_PROXY', 'HTTP_PROXY']) {
+    for (const key of ['HTTPS_PROXY', 'HTTP_PROXY', 'https_proxy', 'http_proxy']) {
       const val = env?.[key];
       if (typeof val === 'string' && val && !hasControlChars(val)) {
         envArgs.push(`${key}=${val}`);
@@ -471,7 +488,7 @@ function buildDarwinShellCommand({ cwd, executable, agentArgs, agent, env }) {
     }
   }
   const invoke = ['env', ...envArgs, executable, ...agentArgs].map(posixQuote).join(' ');
-  return `cd ${posixQuote(cwd)} && ${invoke}`;
+  return `cd -- ${posixQuote(cwd)} && ${invoke}`;
 }
 
 /**

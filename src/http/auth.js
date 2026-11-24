@@ -17,21 +17,20 @@ export function isSecureRequest(req) {
 const LOOPBACK_IP = /^(?:127\.0\.0\.1|::1|::ffff:127\.0\.0\.1)$/i;
 const LOOPBACK_HOSTNAME = /^(?:127\.0\.0\.1|localhost|\[::1\]|::1)$/i;
 const LOOPBACK_HOST_HEADER = /^(?:127\.0\.0\.1|localhost|\[::1\])(?::\d{1,5})?$/i;
-const PROXY_HEADERS = [
+const PROXY_HEADER_NAMES = new Set([
   'forwarded',
   'via',
-  'x-forwarded-for',
-  'x-forwarded-host',
-  'x-forwarded-port',
-  'x-forwarded-proto',
-  'x-forwarded-server',
   'x-real-ip',
-  'cf-connecting-ip',
-  'cf-ray',
-  'cf-visitor',
   'cdn-loop',
   'true-client-ip',
-];
+]);
+
+function isProxyHeader(name) {
+  const lower = String(name).toLowerCase();
+  return PROXY_HEADER_NAMES.has(lower)
+    || lower.startsWith('x-forwarded-')
+    || lower.startsWith('cf-');
+}
 
 function isLoopbackUrl(raw) {
   try {
@@ -51,8 +50,8 @@ export function isLocalRequest(req) {
   const remote = String(req?.socket?.remoteAddress ?? '').trim();
   if (!LOOPBACK_IP.test(remote)) return false;
   const headers = req?.headers ?? {};
-  for (const name of PROXY_HEADERS) {
-    if (headers[name] !== undefined) return false;
+  for (const [name, value] of Object.entries(headers)) {
+    if (value !== undefined && isProxyHeader(name)) return false;
   }
   const host = String(headers.host ?? '').trim();
   if (!LOOPBACK_HOST_HEADER.test(host)) return false;
