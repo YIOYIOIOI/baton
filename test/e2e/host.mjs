@@ -35,7 +35,7 @@ export async function unusedPort() {
   return port;
 }
 
-export async function startHost(t, { guestCanSend = false } = {}) {
+export async function startHost(t, { guestCanSend = false, extraEnv = null, setupBin = null } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'baton-e2e-'));
   let child;
   let closed;
@@ -89,10 +89,12 @@ export async function startHost(t, { guestCanSend = false } = {}) {
     BATON_E2E_TRANSCRIPT: transcript, ANTHROPIC_AUTH_TOKEN: 'isolated-test',
     PATH: [bin, path.dirname(process.execPath)].join(path.delimiter),
     TEMP: root, TMP: root, TMPDIR: root,
+    ...extraEnv,
   };
   for (const name of ['SystemRoot', 'ComSpec', 'ProgramFiles', 'ProgramW6432', 'PATHEXT']) {
     if (process.env[name]) env[name] = process.env[name];
   }
+  if (setupBin) setupBin({ bin, root, home, state, cwd, env });
   async function launch() {
     const signalFixture = pathToFileURL(path.join(import.meta.dirname, '../fixtures/graceful-daemon-signal.mjs')).href;
     child = spawn(process.execPath, ['--import', signalFixture, path.join(project, 'src/cli.js'), 'start', '--port', String(port)], {
@@ -128,5 +130,5 @@ export async function startHost(t, { guestCanSend = false } = {}) {
   const member = (await response.json()).chains.flatMap((chain) => chain.members).find((m) => m.providerId === sessionId);
   if (!member) throw new Error('Fixture session missing from daemon.');
   async function restart() { await stop(); await launch(); }
-  return { base, cwd, root, transcript, sessionId, greeting, key: member.key, request, codeFor, restart };
+  return { base, cwd, root, state, transcript, sessionId, greeting, key: member.key, request, codeFor, restart };
 }

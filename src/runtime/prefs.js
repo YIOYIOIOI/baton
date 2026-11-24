@@ -72,7 +72,7 @@ export function setModel(key, model, { dir = BATON_DIR, now = Date.now() } = {})
  */
 export function getEffort(key, { dir = BATON_DIR } = {}) {
   const v = readAll(dir)[key];
-  return typeof v?.effort === 'string' && v.effort ? v.effort : null;
+  return isEffort(v?.effort) ? v.effort : null;
 }
 
 export function setEffort(key, effort, { dir = BATON_DIR, now = Date.now() } = {}) {

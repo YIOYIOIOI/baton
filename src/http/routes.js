@@ -23,6 +23,8 @@ import { getSessionInfo } from './handlers/info.js';
 import { setGoal } from './handlers/goal.js';
 import { listDevices, revokeDevice, mintPairQr } from './handlers/devices.js';
 import { exportSession } from './handlers/export.js';
+import { openTerminal } from './handlers/terminal.js';
+import { isLocalRequest } from './auth.js';
 import { VERSION } from '../version.js';
 
 // 路由的唯一真源。server.js 按这张表分发，test/routes.test.js 按同一张表
@@ -56,7 +58,7 @@ function sessionSub(pathname, verb) {
  */
 
 /** @returns {Route[]} */
-export function buildRoutes({ auth }) {
+export function buildRoutes({ auth, terminalLauncher = null }) {
   return [
     {
       name: 'health',
@@ -68,26 +70,32 @@ export function buildRoutes({ auth }) {
       // permissionMode 一并捎上：界面上那条「全部放行」的横幅要在**每一屏**都挂着，
       // 而 health 是唯一一个各屏都会打的轻端点。单开一次请求只为了问这个，
       // 等于让横幅比页面本身晚一拍出现。
-      run: async ({ config, principal, deviceId }) => ({
-        status: 200,
-        body: {
-          ok: true,
-          version: VERSION,
-          deviceId: deviceId ?? null,
-          allowSend: config.allowSend,
-          // 两边各自的档位。横幅要判「有没有哪一边开着全部放行」，
-          // 而共用一个标量的时候这个判断必然漏掉另一边。
-          permissionModes: getModes(),
-          // 旧客户端只认这个标量。留着，值取 claude 那边
-          permissionMode: getModes().claude,
-          canSetPermissionMode: (principal?.roots ?? null) === null,
-          principal: {
-            id: principal?.id ?? OWNER_ID,
-            ...(principal?.generation ? { generation: principal.generation } : {}),
-            isOwner: (principal?.roots ?? null) === null,
+      run: async ({ req, config, principal, deviceId }) => {
+        const isOwner = (principal?.roots ?? null) === null && (principal?.id ?? OWNER_ID) === OWNER_ID;
+        const isLocal = isLocalRequest(req);
+        return {
+          status: 200,
+          body: {
+            ok: true,
+            version: VERSION,
+            deviceId: deviceId ?? null,
+            allowSend: config.allowSend,
+            isLocal,
+            canOpenTerminal: isLocal && isOwner,
+            // 两边各自的档位。横幅要判「有没有哪一边开着全部放行」，
+            // 而共用一个标量的时候这个判断必然漏掉另一边。
+            permissionModes: getModes(),
+            // 旧客户端只认这个标量。留着，值取 claude 那边
+            permissionMode: getModes().claude,
+            canSetPermissionMode: (principal?.roots ?? null) === null,
+            principal: {
+              id: principal?.id ?? OWNER_ID,
+              ...(principal?.generation ? { generation: principal.generation } : {}),
+              isOwner: (principal?.roots ?? null) === null,
+            },
           },
-        },
-      }),
+        };
+      },
     },
     {
       name: 'listDevices',
@@ -512,6 +520,20 @@ export function buildRoutes({ auth }) {
       run: async ({ repo, match, res }) => exportSession({ repo, key: match, res }),
     },
     {
+      name: 'openTerminal',
+      method: 'POST',
+      match: (p) => sessionSub(p, 'terminal'),
+      needsBody: true,
+      probe: (key) => `/api/sessions/${encodeURIComponent(key)}/terminal`,
+      run: async ({ repo, principal, req, match }) => openTerminal({
+        repo,
+        principal,
+        req,
+        key: match,
+        ...(terminalLauncher ? { launcher: terminalLauncher } : {}),
+      }),
+    },
+    {
       name: 'stopTurn',
       method: 'POST',
       match: (p) => sessionSub(p, 'stop'),
@@ -527,7 +549,7 @@ export function buildRoutes({ auth }) {
 export const ROUTED_HANDLERS = [
   'health', 'mintPairingCode', 'mintPairQr', 'listDevices', 'revokeDevice',
   'listSessions', 'createSession', 'creationStatus', 'getEvents',
-  'sessionState', 'streamSession', 'exportSession', 'sendMessage', 'cancelQueued', 'promoteQueued', 'stopTurn', 'getEventFull',
+  'sessionState', 'streamSession', 'exportSession', 'openTerminal', 'sendMessage', 'cancelQueued', 'promoteQueued', 'stopTurn', 'getEventFull',
   'pushKey', 'pushSubscribeHandler', 'pushUnsubscribeHandler', 'pushLatest',
   'listModels', 'setSessionModel', 'uploadFile', 'uploadToCwd', 'downloadUpload', 'browseDirs', 'makeDir',
   'listSessionFiles', 'downloadSessionFile',

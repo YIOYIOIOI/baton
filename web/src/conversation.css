@@ -1195,16 +1195,24 @@
   color: var(--tx-secondary);
 }
 
+/* 页头右侧动作组：统一靠右对齐，无论终端/文件/信息窗格哪个可见都保持一致间距 */
+.conv-acts {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+
 /*
-  头部那颗「文件」。幽灵按钮，和标题同一行右侧——它是「看这个会话的目录」，
-  和标题、工作目录是同一类信息，不该做得像个主动作。
+  头部那颗「本地终端」与「文件」。幽灵药丸按钮，和标题同一行右侧。
 */
+.conv-term,
 .conv-files {
   flex: none;
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  margin-left: auto;
   padding: 6px 13px 6px 11px;
   border: 0;
   border-radius: 999px;
@@ -1218,6 +1226,12 @@
     transform var(--t-press) var(--ease);
 }
 
+.conv-term svg {
+  flex: none;
+  width: 14px;
+  height: 14px;
+}
+
 /* 文件夹的轮廓，mask 画成 currentColor */
 .conv-files::before {
   content: '';
@@ -1228,13 +1242,30 @@
   mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 12'%3E%3Cpath d='M1.5 3V2.2c0-.4.3-.7.7-.7h3.2l1.4 1.5h5c.4 0 .7.3.7.7v6.6c0 .4-.3.7-.7.7H2.2c-.4 0-.7-.3-.7-.7V3z' fill='none' stroke='%23000' stroke-width='1.4' stroke-linejoin='round'/%3E%3C/svg%3E") center / contain no-repeat;
 }
 
+.conv-term:hover:not(:disabled),
 .conv-files:hover {
   background: var(--bg-press);
   color: var(--tx-primary);
 }
 
+.conv-term:active:not(:disabled),
 .conv-files:active {
   transform: scale(0.96);
+}
+
+.conv-term:disabled {
+  opacity: 0.65;
+  cursor: progress;
+}
+
+@media (max-width: 560px) {
+  .conv-term {
+    padding: 6px 9px;
+  }
+
+  .conv-term-label {
+    display: none;
+  }
 }
 
 /*
@@ -1404,7 +1435,7 @@
   gap: 4px;
 }
 
-/* 页头最右边的「…」（会话操作菜单）。紧跟「文件」；没有「文件」时自己顶到最右 */
+/* 页头最右边的「…」（会话操作菜单），位于 .conv-acts 内 */
 .conv-more {
   flex: none;
   display: inline-flex;
@@ -1412,17 +1443,12 @@
   justify-content: center;
   width: 32px;
   height: 32px;
-  margin-left: 6px;
   border: 0;
   border-radius: 999px;
   background: transparent;
   color: var(--tx-secondary);
   cursor: pointer;
   transition: background-color var(--t-hover) var(--ease), color var(--t-hover) var(--ease);
-}
-
-.conv-id + .conv-more {
-  margin-left: auto;
 }
 
 .conv-more:hover,

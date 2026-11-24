@@ -169,11 +169,11 @@ function isCrossOriginWrite(req, pathname, config) {
   return false;
 }
 
-export function createServer({ repo, auth, config, maxBodyBytesInFlight = 64 * 1024 * 1024,
+export function createServer({ repo, auth, config, terminalLauncher = null, maxBodyBytesInFlight = 64 * 1024 * 1024,
   maxPairBodiesInFlight = 8, pairBodyTimeoutMs = 10_000 }) {
   // 路由表来自 routes.js（唯一真源），这里只负责分发——
   // 不再有散落的正则与 if 链，也就不会再出现「分支永远进不去」
-  const routes = buildRoutes({ auth });
+  const routes = buildRoutes({ auth, terminalLauncher });
   const readBody = bodyReader(maxBodyBytesInFlight);
   let pendingPairBodies = 0;
   async function readPairBody(req) {

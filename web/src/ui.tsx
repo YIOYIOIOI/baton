@@ -26,15 +26,15 @@ let seq = 0;
 const toastSubs = new Set<() => void>();
 const emit = () => toastSubs.forEach((f) => f());
 
-/** 底部中间一条，2.4 秒后自己走。「已复制」这类不值得占一块地方的回执 */
-export function toast(text: string) {
+/** 底部中间一条，默认 2.4 秒后自己走；错误回执可传更长停留时间。 */
+export function toast(text: string, durationMs = 2400) {
   const id = ++seq;
   toasts = [...toasts, { id, text }].slice(-3);
   emit();
   setTimeout(() => {
     toasts = toasts.filter((t) => t.id !== id);
     emit();
-  }, 2400);
+  }, durationMs);
 }
 
 export function Toasts() {

@@ -3,6 +3,7 @@ import { ApiError, api, type Agent, type Cut, type Ev, type PendingAsk, type Tic
 import { AskCard } from './Ask';
 import { Link } from './router';
 import { Icon, useMember } from './Shell';
+import { openSessionTerminal, useCanOpenTerminal, useOpeningTerminal } from './terminal';
 import { Menu, copyText, keyLabel, openPalette, openShortcuts } from './ui';
 import { whereLabel } from './sessions';
 import { Ball } from './Ball';
@@ -574,8 +575,13 @@ function EventRow({ ev, sessionKey }: { ev: Ev; sessionKey: string }) {
 
 /* ── 头部 ─────────────────────────────────────────────────────────────────── */
 
-function ConvHead({ sessionKey, onFiles, infoOpen, onToggleInfo }: {
-  sessionKey: string; onFiles?: () => void; infoOpen?: boolean; onToggleInfo?: () => void;
+function ConvHead({ sessionKey, onTerminal, openingTerminal, onFiles, infoOpen, onToggleInfo }: {
+  sessionKey: string;
+  onTerminal?: () => void;
+  openingTerminal?: boolean;
+  onFiles?: () => void;
+  infoOpen?: boolean;
+  onToggleInfo?: () => void;
 }) {
   const m = useMember(sessionKey);
   const { t } = useI18n();
@@ -601,41 +607,57 @@ function ConvHead({ sessionKey, onFiles, infoOpen, onToggleInfo }: {
           </span>
         )}
       </div>
-      {onFiles && (
-        <button type="button" className="conv-files" onClick={onFiles}>
-          {t('conv.files')}
-        </button>
-      )}
-      {onToggleInfo && (
-        <button
-          type="button"
-          className={`conv-panel${infoOpen ? ' is-on' : ''}`}
-          onClick={onToggleInfo}
-          aria-pressed={infoOpen}
-          aria-label={infoOpen ? t('conv.panelClose') : t('conv.panelOpen')}
-          title={infoOpen ? t('conv.panelClose') : t('conv.panelTitle')}
-        >
-          <Icon name="panel" />
-        </button>
-      )}
-      <Menu
-        label={t('shell.sessionActions')}
-        align="end"
-        items={[
-          { label: t('shell.copyLink'), onSelect: () => copyText(window.location.href, t('shell.copiedLink')) },
-          { label: t('shell.openNewTab'), onSelect: () => window.open(window.location.href, '_blank', 'noopener') },
-          { label: t('conv.exportMd'), onSelect: exportMarkdown },
-          ...(onFiles ? [{ label: t('conv.files'), onSelect: onFiles }] : []),
-          'sep',
-          { label: `${t('palette.label')}…`, hint: keyLabel('mod+k'), onSelect: openPalette },
-          { label: t('shell.shortcuts'), hint: keyLabel('mod+/'), onSelect: openShortcuts },
-        ]}
-        trigger={(p) => (
-          <button type="button" {...p} className="conv-more" aria-label={t('shell.sessionActions')} title={t('shell.sessionActions')}>
-            <Icon name="more" />
+      <div className="conv-acts">
+        {onTerminal && (
+          <button
+            type="button"
+            className="conv-term"
+            onClick={onTerminal}
+            disabled={openingTerminal}
+            aria-label={t('conv.terminalTitle')}
+            title={t('conv.terminalTitle')}
+          >
+            <Icon name="terminal" />
+            <span className="conv-term-label">{openingTerminal ? t('conv.terminalOpening') : t('conv.terminal')}</span>
           </button>
         )}
-      />
+        {onFiles && (
+          <button type="button" className="conv-files" onClick={onFiles}>
+            {t('conv.files')}
+          </button>
+        )}
+        {onToggleInfo && (
+          <button
+            type="button"
+            className={`conv-panel${infoOpen ? ' is-on' : ''}`}
+            onClick={onToggleInfo}
+            aria-pressed={infoOpen}
+            aria-label={infoOpen ? t('conv.panelClose') : t('conv.panelOpen')}
+            title={infoOpen ? t('conv.panelClose') : t('conv.panelTitle')}
+          >
+            <Icon name="panel" />
+          </button>
+        )}
+        <Menu
+          label={t('shell.sessionActions')}
+          align="end"
+          items={[
+            ...(onTerminal ? [{ label: t('shell.openTerminal'), disabled: openingTerminal, onSelect: onTerminal }] : []),
+            { label: t('shell.copyLink'), onSelect: () => copyText(window.location.href, t('shell.copiedLink')) },
+            { label: t('shell.openNewTab'), onSelect: () => window.open(window.location.href, '_blank', 'noopener') },
+            { label: t('conv.exportMd'), onSelect: exportMarkdown },
+            ...(onFiles ? [{ label: t('conv.files'), onSelect: onFiles }] : []),
+            'sep',
+            { label: `${t('palette.label')}…`, hint: keyLabel('mod+k'), onSelect: openPalette },
+            { label: t('shell.shortcuts'), hint: keyLabel('mod+/'), onSelect: openShortcuts },
+          ]}
+          trigger={(p) => (
+            <button type="button" {...p} className="conv-more" aria-label={t('shell.sessionActions')} title={t('shell.sessionActions')}>
+              <Icon name="more" />
+            </button>
+          )}
+        />
+      </div>
     </header>
   );
 }
@@ -1390,6 +1412,12 @@ export function Conversation({ sessionKey }: { sessionKey: string }) {
   }
   // 会话列表还没回来时是 null。配置条据此先不渲染——见 Composer 里那条注释
   const member = useMember(sessionKey);
+  const canOpenTerminal = useCanOpenTerminal();
+  const openingTerminal = useOpeningTerminal(sessionKey);
+  const showTerminal = canOpenTerminal && Boolean(member?.supportsTerminal);
+  const handleOpenTerminal = useCallback(() => {
+    void openSessionTerminal(sessionKey);
+  }, [sessionKey]);
   const agent = member?.agent ?? null;
 
   return (
@@ -1397,6 +1425,8 @@ export function Conversation({ sessionKey }: { sessionKey: string }) {
     <div className="conv" {...dropProps}>
       <ConvHead
         sessionKey={sessionKey}
+        onTerminal={showTerminal ? handleOpenTerminal : undefined}
+        openingTerminal={openingTerminal}
         onFiles={member && !member.cwd ? undefined : () => setFiles(true)}
         infoOpen={infoOpen}
         onToggleInfo={toggleInfo}
