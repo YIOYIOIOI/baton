@@ -2,8 +2,10 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { execAgy, findAgyBinary, withAgyEnv } from './agy.js';
-import { killChildTree, runBuffered } from './spawn.js';
+import { agyLaunch, execAgy, findAgyBinary } from './agy.js';
+import { runBuffered } from './spawn.js';
+import { childTree } from './childTree.js';
+import { acpResponse, ByteLines, MAX_LINE_BYTES } from './antigravityStream.js';
 
 /**
  * Codex 的**权威**模型目录。
@@ -414,82 +416,69 @@ export function parseAntigravityModels(stdout) {
   };
 }
 
-function probeAntigravityViaAcp({ agyBin, product = 'antigravity', cwd = process.cwd(), env = process.env, timeoutMs = 12_000 }) {
+export function probeAntigravityViaAcp({
+  agyBin, product = 'antigravity', cwd = process.cwd(), env = process.env, timeoutMs = 12_000,
+  spawnFn = spawn, maxLineBytes = MAX_LINE_BYTES,
+}) {
   return new Promise((resolve) => {
-    const useShell = process.platform === 'win32' && /\.(cmd|bat)$/i.test(agyBin);
-    const cmd = useShell && /\s/.test(agyBin) ? `"${agyBin}"` : agyBin;
-    const child = spawn(cmd, ['acp', '--stdio', `--app-data-dir=${product}`], {
-      env: withAgyEnv(env),
-      shell: useShell,
-      windowsHide: true,
-      stdio: ['pipe', 'pipe', 'pipe'],
+    const launch = agyLaunch({ agyBin, env, cwd });
+    if (!launch) return resolve(null);
+    const child = spawnFn(launch.command, ['acp', '--stdio', '--app-data-dir=' + product], {
+      cwd, env: launch.env, shell: launch.shell, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'],
       ...(process.platform !== 'win32' ? { detached: true } : {}),
     });
 
-    let settled = false;
-    let buf = '';
-    const finish = (val) => {
-      if (settled) return;
-      settled = true;
+    let pendingId = 0;
+    const tree = childTree(child);
+    let finished = false;
+    let closed = false;
+    let directory = null;
+    const finish = (value) => {
+      if (finished) return;
+      finished = true;
+      directory = value;
       clearTimeout(timer);
-      killChildTree(child);
-      resolve(val);
+      if (!closed) tree.stop();
     };
     const timer = setTimeout(() => finish(null), timeoutMs);
-    timer.unref?.();
+    timer.unref();
 
-    const send = (obj) => {
-      try {
-        child.stdin?.write(`${JSON.stringify(obj)}\n`);
-      } catch {
-        // 已退出
+    const send = (frame) => {
+      if (!closed && child.stdin?.writable) child.stdin.write(JSON.stringify(frame) + '\n');
+    };
+    const request = (method, params) => send({ jsonrpc: '2.0', id: ++pendingId, method, params });
+    const frames = new ByteLines(maxLineBytes);
+    const handleLine = (line) => {
+      if (finished) return;
+      const msg = acpResponse(line, send);
+      if (!msg || msg.id !== pendingId) return;
+      if (Object.hasOwn(msg, 'error')) return finish(null);
+      if (pendingId === 1) {
+        request('session/list', {});
+      } else if (pendingId === 2) {
+        const first = msg.result?.sessions?.[0];
+        if (!first?.sessionId) return finish(null);
+        const loadCwd = typeof first.cwd === 'string' && first.cwd && !first.cwd.startsWith('/') && fs.existsSync(first.cwd)
+          ? first.cwd : cwd;
+        request('session/load', { sessionId: first.sessionId, cwd: loadCwd, mcpServers: [] });
+      } else if (pendingId === 3) {
+        finish(parseAntigravityAcpLoad(msg.result));
       }
     };
-
-    child.stdout?.setEncoding('utf8');
     child.stdout?.on('data', (chunk) => {
-      buf += chunk;
-      let nl;
-      while ((nl = buf.indexOf('\n')) >= 0) {
-        const line = buf.slice(0, nl).trim();
-        buf = buf.slice(nl + 1);
-        if (!line) continue;
-        let msg;
-        try {
-          msg = JSON.parse(line);
-        } catch {
-          continue;
-        }
-        if (msg.id === 1) {
-          send({ jsonrpc: '2.0', id: 2, method: 'session/list', params: {} });
-        } else if (msg.id === 2) {
-          const first = Array.isArray(msg.result?.sessions) ? msg.result.sessions[0] : null;
-          if (!first?.sessionId) {
-            finish(null);
-            return;
-          }
-          const loadCwd = first.cwd && !first.cwd.startsWith('/') && fs.existsSync(first.cwd) ? first.cwd : cwd;
-          send({
-            jsonrpc: '2.0',
-            id: 3,
-            method: 'session/load',
-            params: { sessionId: first.sessionId, cwd: loadCwd, mcpServers: [] },
-          });
-        } else if (msg.id === 3) {
-          finish(msg.result ? parseAntigravityAcpLoad(msg.result) : null);
-          return;
-        }
-      }
+      if (!finished) frames.push(chunk, handleLine, () => finish(null));
     });
-    child.on('error', () => finish(null));
-    child.on('close', () => finish(null));
-    child.stdin?.on('error', () => {});
-    send({
-      jsonrpc: '2.0',
-      id: 1,
-      method: 'initialize',
-      params: { protocolVersion: 1, clientCapabilities: {}, clientInfo: { name: 'baton', version: '0.2.0' } },
+    child.stderr?.resume();
+    child.once('error', () => finish(null));
+    child.once('close', async () => {
+      closed = true;
+      if (!finished && frames.size) handleLine(frames.text());
+      clearTimeout(timer);
+      await tree.wait();
+      resolve(directory);
     });
+    child.stdin?.on('error', () => finish(null));
+    request('initialize', { protocolVersion: 1, clientCapabilities: {}, clientInfo: { name: 'baton', version: '0.2.0' } });
   });
 }
 

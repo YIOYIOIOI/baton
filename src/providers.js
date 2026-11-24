@@ -30,12 +30,26 @@ export function decodeKey(key, roots) {
   if (!relPath || relPath.includes('..') || path.isAbsolute(relPath) || /^[a-zA-Z]:/.test(relPath)) {
     throw new Error(`拒绝该 key：检测到路径穿越（${relPath}）`);
   }
+  // Buffer 的解码器也接受带填充等多种写法。运行记录和 SSE 额度按原始 key 分区。
+  if (encodeKey(agent, relPath) !== key) throw new Error('拒绝该 key：不是规范的 base64url 编码。');
   return { agent, relPath, file: path.join(root, relPath) };
+}
+
+const transientFileErrors = new Set(['ENOENT', 'ENOTDIR', 'ESTALE', 'EBUSY', 'EACCES', 'EPERM']);
+export function isTransientFileError(error) {
+  return transientFileErrors.has(error?.code);
 }
 
 function statRef(agent, root, relPath, providerId, rolloutId, project) {
   const file = path.join(root, relPath);
-  const st = fs.statSync(file);
+  let st;
+  try {
+    st = fs.statSync(file);
+  } catch (error) {
+    if (isTransientFileError(error)) return null;
+    throw error;
+  }
+  if (!st.isFile()) return null;
   const posixRel = relPath.split(path.sep).join('/');
   return {
     agent,
@@ -63,7 +77,18 @@ export function sessionRef(agent, root, relPath) {
   const parts = relPath.split(/[\\/]/).filter(Boolean);
   const rel = path.join(...parts);
   try {
-    if (!fs.statSync(path.join(root, rel)).isFile()) return null;
+    const file = fs.realpathSync.native(path.join(root, rel));
+    const actual = path.relative(fs.realpathSync.native(root), file).split(path.sep).join('/');
+    if (actual !== relPath || !fs.statSync(file).isFile()) return null;
+    // POSIX 上 realpath 可以保留调用者的拼写，即使所在卷忽略大小写或 Unicode 规范化。
+    // 列表编码的是实际目录项，逐层核对仅涉及这条路径上的目录。
+    if (process.platform !== 'win32') {
+      let parent = root;
+      for (const part of parts) {
+        if (!fs.readdirSync(parent).includes(part)) return null;
+        parent = path.join(parent, part);
+      }
+    }
   } catch {
     return null; // 文件不在了
   }
@@ -82,7 +107,7 @@ export function sessionRef(agent, root, relPath) {
   return null;
 }
 
-function parseAntigravityRel(parts) {
+export function parseAntigravityRel(parts) {
   let product = null;
   let rest = parts;
   if (parts.length === 6 && ANTIGRAVITY_PRODUCTS.includes(parts[0])) {
@@ -116,7 +141,8 @@ export function claudeSessionFiles({ root = CLAUDE_ROOT } = {}) {
       // 只认这一层的 *.jsonl；<sessionId>/subagents/ 是子 agent 追踪，不是会话
       if (!e.isFile() || !e.name.endsWith('.jsonl')) continue;
       const rel = path.join(p.name, e.name);
-      out.push(statRef('claude', root, rel, e.name.replace(/\.jsonl$/, ''), null, p.name));
+      const ref = statRef('claude', root, rel, e.name.replace(/\.jsonl$/, ''), null, p.name);
+      if (ref) out.push(ref);
     }
   }
   return out;
@@ -139,7 +165,8 @@ export function codexRolloutFiles({ root = CODEX_ROOT } = {}) {
         const parsed = parseRolloutName(e.name);
         if (!parsed) continue;
         const rel = path.relative(root, full);
-        out.push(statRef('codex', root, rel, parsed.threadId, parsed.rolloutId, null));
+        const ref = statRef('codex', root, rel, parsed.threadId, parsed.rolloutId, null);
+        if (ref) out.push(ref);
       }
     }
   };
@@ -162,7 +189,7 @@ export function antigravitySessionFiles({ root = GEMINI_ROOT } = {}) {
     } catch {
       return;
     }
-    const product = prefix[0] ?? 'antigravity';
+    const product = prefix[0] ?? null;
     for (const c of convs) {
       if (!c.isDirectory()) continue;
       const logsRel = path.join(...prefix, 'brain', c.name, '.system_generated', 'logs');
@@ -181,7 +208,10 @@ export function antigravitySessionFiles({ root = GEMINI_ROOT } = {}) {
           // 紧凑版也不在
         }
       }
-      if (pickedRel) out.push(statRef('antigravity', root, pickedRel, c.name, null, product));
+      if (pickedRel) {
+        const ref = statRef('antigravity', root, pickedRel, c.name, null, product);
+        if (ref) out.push(ref);
+      }
     }
   };
   for (const product of ANTIGRAVITY_PRODUCTS) scanProduct([product]);

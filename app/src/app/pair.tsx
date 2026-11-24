@@ -34,6 +34,8 @@ export default function PairScreen() {
   const inset = useSafeAreaInsets();
   const pair = useConnection((s) => s.pair);
   const savedUrl = useConnection((s) => s.baseUrl);
+  const pendingUnpair = useConnection((s) => s.pendingUnpair);
+  const storageError = useConnection((s) => s.unpairStorageError);
   const { locale, isEn, setPref, en, trNew } = useLocale();
 
   // 「要不要问地址」必须用 Platform.OS 判，**不能用 pageOrigin()**：
@@ -57,15 +59,17 @@ export default function PairScreen() {
   const [focus, setFocus] = useState(false);
   const [autoTried, setAutoTried] = useState(false);
   const [scanning, setScanning] = useState(false);
+  const [otherOrigin, setOtherOrigin] = useState<string | null>(null);
 
-  const ready = (isWeb || url.trim().length > 0) && code.length === 12;
+  const target = isWeb ? origin : url.trim();
+  const ready = Boolean(target) && !pendingUnpair && !otherOrigin && code.length === 12;
 
   async function go() {
-    if (!ready || busy) return;
+    if (!target || !ready || busy) return;
     setBusy(true);
     setErr(null);
     try {
-      await pair(origin ?? url, code);
+      await pair(target, code);
       // 配对成功是这个 App 里最值得给一下的时刻：一次性的、有后果的、
       // 而且紧接着就跳走了——不给触感的话，跳转本身是唯一的确认
       haptics.success();
@@ -74,7 +78,11 @@ export default function PairScreen() {
       // 配对码是一次性的，失败就废了一个。这一下要让人知道刚才那次没成
       haptics.fail();
       // 服务端给的 fix 是**可照做的**，直接渲染，不自己编一句
-      if (e instanceof BatonError) setErr({ msg: e.message, fix: e.fix });
+      if (e instanceof Error && e.message === 'unpair_pending') setErr({ msg: trNew('pair.unpairPending'), fix: '' });
+      else if (e instanceof Error && e.message === 'pairing_unconfirmed') setErr({ msg: trNew('pair.unconfirmed'), fix: '' });
+      else if (e instanceof Error && (e.message === 'pairing_busy' || e.message === 'pairing_coordination')) setErr({ msg: trNew(e.message === 'pairing_busy' ? 'pair.busyElsewhere' : 'pair.coordination'), fix: '' });
+      else if (e instanceof Error && e.message === 'invalid_baton_origin') setErr({ msg: trNew('pair.invalidOrigin'), fix: '' });
+      else if (e instanceof BatonError) setErr({ msg: e.message, fix: e.fix });
       else if (e instanceof LinkError) {
         const key = e.link === 'ok' ? null : e.link;
         const info = key ? linkInfo(key, locale) : null;
@@ -88,12 +96,11 @@ export default function PairScreen() {
   // 扫码进来就自己配，不等用户再点一下「配对」——他已经做过一次动作了（扫）。
   // 只试一次：失败后停在这一屏让他看清原因，而不是无限重试。
   useEffect(() => {
-    if (autoTried || busy) return;
-    if (code.length !== 12 || !(isWeb || url.trim())) return;
+    if (autoTried || busy || !ready) return;
     if (!scanned) return; // 手打的不自动提交——打到第 12 位就跳走会很突兀
     setAutoTried(true);
     go();
-  }, [code, scanned, autoTried, busy, isWeb, url]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [code, scanned, autoTried, busy, ready, target]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const s = styles(t);
   const barH = useFloatBarHeight();
@@ -119,6 +126,7 @@ export default function PairScreen() {
         <Text style={s.brand}>Baton</Text>
         <Text style={s.h1}>{isEn ? en('pair.h1') : '连上那台电脑'}</Text>
         <Text style={s.lede}>{isEn ? en('pair.lede') : '配一次就行，一年内不再问。'}</Text>
+        {pendingUnpair && <Text style={s.lede} accessibilityLiveRegion="polite">{trNew(storageError ? 'pair.unpairStorageError' : 'pair.unpairPending')}</Text>}
 
         {isWeb ? null : (
           <TextInput
@@ -138,10 +146,14 @@ export default function PairScreen() {
           style={[
             s.codeIn,
             focus && { borderColor: t.c.coral },
-            err && { borderColor: t.c.txDanger },
+            (err || otherOrigin) && { borderColor: t.c.txDanger },
           ]}
           value={code}
-          onChangeText={(v) => setCode(v.toUpperCase().replace(/[^A-Z2-9]/g, '').slice(0, 12))}
+          onChangeText={(v) => {
+            setOtherOrigin(null);
+            setScanned('');
+            setCode(normalizeCode(v));
+          }}
           onFocus={() => setFocus(true)}
           onBlur={() => setFocus(false)}
           placeholder="············"
@@ -153,7 +165,11 @@ export default function PairScreen() {
           accessibilityLabel={isEn ? en('pair.codeA11y') : '12 位配对码'}
         />
 
-        {err ? (
+        {otherOrigin ? (
+          <Text style={s.err} selectable accessibilityRole="alert">
+            {trNew('pair.otherOrigin', { origin: otherOrigin })}
+          </Text>
+        ) : err ? (
           <View style={s.errBox}>
             <Text style={s.err}>{err.msg}</Text>
             {err.fix ? <Text style={s.errFix}>{err.fix}</Text> : null}
@@ -166,6 +182,7 @@ export default function PairScreen() {
         <Pressable
           style={s.scan}
           onPress={() => { setErr(null); setScanning(true); }}
+          disabled={busy}
           accessibilityRole="button"
         >
           <IconCamera size={19} color={t.c.txInverse} />
@@ -202,6 +219,14 @@ export default function PairScreen() {
         onClose={() => setScanning(false)}
         onScan={({ code: c, origin: o }) => {
           setScanning(false);
+          if (isWeb && o && o !== origin) {
+            // 只保留目标地址，输入框与自动提交都不能沿用这次扫码的凭据。
+            setOtherOrigin(o);
+            setScanned('');
+            setCode('');
+            return;
+          }
+          setOtherOrigin(null);
           setCode(c);
           // 扫到的链接里带着主机名，原生端连地址一起解决了——那边本来还得手打
           if (o && !isWeb) setUrl(o);

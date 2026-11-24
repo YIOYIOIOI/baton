@@ -1,7 +1,7 @@
 {
   "name": "baton",
   "version": "0.2.0",
-  "description": "Continue local Claude Code, Codex, and Gemini Antigravity sessions from any browser or phone — zero cloud relay, zero database, API-relay friendly.",
+  "description": "Continue local Claude Code, Codex, and Gemini Antigravity sessions from any browser or phone. No cloud relay or database server required.",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -39,6 +39,7 @@
   },
   "scripts": {
     "test": "node --test --import ./test/setup.js \"test/*.test.js\"",
+    "test:e2e": "node --import ./test/setup.js --test --test-concurrency=2 \"test/e2e/*.test.js\"",
     "start": "node src/cli.js",
     "doctor": "node src/cli.js doctor",
     "pair": "node scripts/pair.mjs",

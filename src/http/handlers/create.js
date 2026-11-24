@@ -5,7 +5,8 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { inScope } from '../../scope.js';
+import { scopedPath } from '../../scope.js';
+import { isTransientFileError } from '../../providers.js';
 import {
   buildClaudeNewArgs, buildCodexNewArgs, buildAntigravityNewArgs, assertModel, isEffort,
 } from '../../agent/args.js';
@@ -18,10 +19,12 @@ import {
 import { generateTitle } from '../../agent/title.js';
 import { missingCredentials, CREDENTIAL_FIX } from '../../agent/preflight.js';
 import { appendAudit } from '../../audit.js';
-import { startTurn, endTurn, latestTurn } from '../../runtime/turns.js';
+import { startTurn, registerTurnHandle, liveTurns, endTurn, latestTurn } from '../../runtime/turns.js';
+import { beginExecution, currentInstanceId, executionHandle, finishExecution, isShuttingDown } from '../../runtime/instance.js';
+import { boundCreationKey, mayClaimCreation, readCreation, reserveCreation, saveCreation, settleCreation } from '../../runtime/creations.js';
 import { enqueue, takeNext, listQueue } from '../../runtime/queue.js';
 import { errorBody } from '../errors.js';
-import { liveTurns, defaultRunner, drainQueue } from './turns.js';
+import { defaultRunner, drainQueue } from './turns.js';
 import { defaultPushSend } from './push.js';
 
 export function defaultRegistrar({ cliSessionId, cwd, title }) {
@@ -31,6 +34,25 @@ export function defaultRegistrar({ cliSessionId, cwd, title }) {
   const entry = buildRegistryEntry({ template, cliSessionId, cwd, title });
   if (!entry) return null;
   return writeRegistryEntry(entry, { dir: picked.dir });
+}
+
+function creationView(receipt) {
+  return {
+    turnId: receipt.turnId, status: receipt.status, delivery: receipt.delivery, sessionId: receipt.sessionId ?? null,
+    key: receipt.key ?? null, statusUrl: '/api/session-creations/' + receipt.turnId,
+    ...(receipt.error ? { error: receipt.error } : {}),
+    ...(receipt.status === 'unconfirmed' ? { note: '正在核对桌面端的新建结果。请用本回执查询，避免重复提交。' } : {}),
+  };
+}
+
+export function creationStatus({ turnId, principal, repo }) {
+  const receipt = readCreation(turnId);
+  const missing = () => ({ status: 404, body: errorBody('creation_not_found', '未找到这次新建请求。', '请使用原身份及创建时返回的查询地址。') });
+  if (!receipt || receipt.principalId !== (principal?.id ?? 'owner') || receipt.generation !== (principal?.generation ?? null)
+      || !scopedPath(receipt.cwd, principal)) return missing();
+  if (!receipt.key) return { status: 200, body: creationView(receipt) };
+  const key = boundCreationKey(receipt, repo);
+  return key ? { status: 200, body: creationView({ ...receipt, key }) } : missing();
 }
 
 /**
@@ -51,6 +73,7 @@ export async function createSession({
   turns: turnsIn, queue: queueIn, push: pushIn, prefs = { set: setModel },
   landWaitMs = 30_000, pollMs = 300, landPollMaxMs = 10 * 60_000,
 }) {
+  if (isShuttingDown()) return { status: 503, body: errorBody('shutting_down', 'Baton 正在关闭。', '重新连接后再试。') };
   if (config.allowSend !== true) {
     return {
       status: 403,
@@ -80,11 +103,11 @@ export async function createSession({
         '例如 C:\\workspace\\myproj（Windows）或 /home/user/myproj（POSIX）。可用 GET /api/dirs 浏览可选目录。'),
     };
   }
-  const dir = path.resolve(cwd);
-  if (!inScope(dir, principal?.roots ?? null)) {
+  const dir = scopedPath(cwd, principal);
+  if (!dir) {
     return {
       status: 403,
-      body: errorBody('cwd_not_allowed', `工作目录不在你的工作区里：${dir}`,
+      body: errorBody('cwd_not_allowed', `工作目录不在你的工作区里：${cwd}`,
         `你的工作区是 ${principal.roots.join('、')}，只能在它下面新建会话。`),
     };
   }
@@ -197,6 +220,10 @@ export async function createSession({
 
   // claude 的会话 id 是我们用 --session-id 给的；codex 的要等 stdout 里的 thread.started
   let providerId = agent === 'claude' ? sessionId : null;
+  let observedCreation = null;
+  /** @type {ReturnType<typeof saveCreation> | null} */
+  let receipt = null;
+  const uncertain = Promise.withResolvers();
   let handle = null;
   let key = null;
   let finished = false;
@@ -207,28 +234,41 @@ export async function createSession({
   let onLanded;
   const landed = new Promise((resolve) => { onLanded = resolve; });
 
-  const land = () => {
+  const register = () => {
     if (key || !providerId) return;
-    const m = repo.listChains().flatMap((c) => c.members).find((x) => x.providerId === providerId);
+    const m = observedCreation ? repo.getSession(observedCreation.key)
+      : repo.listChains().flatMap((c) => c.members).find((x) => x.providerId === providerId);
     if (!m) return;
-    key = m.key;
+    if (receipt) {
+      const current = principalOf?.(who) ?? (principalOf ? null : principal);
+      if (!observedCreation || (who !== 'owner' && (!current || (current.generation ?? null) !== receipt.generation
+          || !scopedPath(dir, current) || !scopedPath(m.cwd, current)))) return;
+      const reserved = reserveCreation(receipt, { ...observedCreation, cwd: m.cwd });
+      if (!reserved) return;
+      receipt = reserved;
+    }
+    const turnKey = receipt?.reservation?.key ?? m.key;
     // 选的模型和强度**现在**就记到会话上：第一轮还在跑时排进来的消息，发出去要用同一套
     if (picked) {
       try {
-        prefs.set(key, picked);
+        prefs.set(turnKey, picked);
       } catch {
         // 偏好没存上不该让「会话已建好」这件事失败
       }
     }
     if (pickedEffort) {
       try {
-        setEffort(key, pickedEffort);
+        setEffort(turnKey, pickedEffort);
       } catch {
         // 同上
       }
     }
-    turns.start({ key, turnId, agent, prompt: text }, { now: startedAt });
-    if (handle && !finished) liveTurns.set(turnId, handle);
+    turns.start({ key: turnKey, turnId, agent, prompt: text, principalId: who, principalGeneration: principal?.generation ?? null,
+      ...(receipt && handle?.monitor ? { adoptedDesktop: { ownerId: receipt.ownerId, monitor: handle.monitor } } : {}),
+    }, { now: startedAt });
+    key = turnKey;
+    if (handle && !finished) registerTurnHandle(key, turnId, handle);
+    if (receipt) receipt = settleCreation(receipt, { status: 'identified', sessionId: providerId, directory: observedCreation.directory, key });
     if (agent === 'claude') {
       try {
         const regFile = registrar({ cliSessionId: providerId, cwd: dir, title });
@@ -252,18 +292,46 @@ export async function createSession({
     onLanded();
   };
 
+  let landingErrorMessage = '';
+  const land = () => {
+    try {
+      register();
+    } catch (error) {
+      // File rotation is retried on the next poll. A timer must never bring down other sessions.
+      if (!isTransientFileError(error) && landingErrorMessage !== error.message) {
+        console.warn('[baton] 会话登记暂时失败。', error.message);
+      }
+      landingErrorMessage = error.message;
+    }
+  };
+
   // 落地通常在一两秒内；一直没落地（卡在启动上）也不无限轮询下去
   const poll = setInterval(land, pollMs);
   poll.unref?.();
   const pollCap = setTimeout(() => clearInterval(poll), landPollMaxMs);
   pollCap.unref?.();
 
+  beginExecution(turnId);
   const settled = Promise.resolve()
     .then(() => runner({
-      member, message: text, args, isNew: true,
+      member, message: text, args, model: picked, effort: runEffort, isNew: true,
+      mayClaimCreation: (match) => mayClaimCreation(receipt, match),
       onStart: (h) => {
         handle = h;
-        if (key && !finished) liveTurns.set(turnId, h);
+        if (!finished && !key && agent === 'antigravity' && h.canStop === false && h.creation) {
+          if (!receipt) {
+            // This synchronous write precedes the irreversible bridge POST. Failure prevents dispatch.
+            receipt = saveCreation({ turnId, ownerId: currentInstanceId(), startedAt, cwd: dir, principalId: who,
+              generation: principal?.generation ?? null, prompt: text, model: picked, effort: pickedEffort,
+              status: 'unconfirmed', delivery: h.creation.delivery, evidence: h.creation });
+          } else {
+            try { receipt = saveCreation({ ...receipt, delivery: h.creation.delivery, evidence: h.creation }); }
+            catch { /* The pre-dispatch evidence still supports read-only recovery. */ }
+          }
+          if (h.creation.delivery === 'unknown') uncertain.resolve();
+        }
+        if (key && !finished) registerTurnHandle(key, turnId, h);
+        else if (!finished) executionHandle(turnId, h, null, !!receipt);
       },
       onLine: (line) => {
         if (providerId) return;
@@ -273,6 +341,9 @@ export async function createSession({
             || (j.type === 'conversation.started' && j.conversation_id)
             || (j.event === 'init' && j.conversation_id)) {
             providerId = j.thread_id ?? j.conversation_id;
+            if (agent === 'antigravity' && typeof j.key === 'string') {
+              observedCreation = { key: j.key, id: providerId, directory: j.directory, projectId: j.projectId };
+            }
             land();
           }
         } catch {
@@ -289,9 +360,12 @@ export async function createSession({
       providerId ??= r?.summary?.sessionId ?? null;
       land(); // 最后查一次：可能正好落在两次轮询之间
       const s = err ? { status: 'failed', error: err.message } : (r.summary ?? {});
-      audit({ key: key ?? `${agent}:new`, agent, message: '', turnId, status: s.status ?? 'unknown', principal: who });
-      if (!key) return { r, s };
-      turns.end({ key, turnId, status: s.status, error: s.error, tokens: s.tokens, eventCount: s.eventCount });
+      if (!key && receipt && s.status === 'failed' && r?.summary?.delivery === 'not_dispatched') {
+        receipt = settleCreation(receipt, { status: 'failed', delivery: 'not_dispatched', error: s.error });
+      }
+      const rec = key ? turns.end({ key, turnId, status: s.status, error: s.error, tokens: s.tokens, eventCount: s.eventCount }) : null;
+      audit({ key: key ?? `${agent}:new`, agent, message: '', turnId, status: rec?.status ?? s.status ?? 'unknown', principal: who });
+      if (!key || isShuttingDown()) return { r, s };
       // 和 sendMessage 一样收尾：排着的发出去；全都跑完了才推送
       try {
         await drainQueue({ repo, config, key, principalOf, runner, audit, env, turns, queue });
@@ -300,17 +374,18 @@ export async function createSession({
       }
       try {
         if (queue.list(key).length === 0 && turns.latest(key)?.status !== 'running') {
-          await push.send({ key, member: repo.getSession(key) ?? member, turn: turns.latest(key), principalId: who });
+          await push.send({ key, member: repo.getSession(key) ?? member, turn: turns.latest(key), principalId: who, principal });
         }
       } catch {
         // 推送失败绝不能影响这一轮的记录
       }
       return { r, s };
-    });
+    }).finally(() => finishExecution(turnId));
 
   const outcome = await Promise.race([
     landed.then(() => 'landed'),
     settled.then(() => 'finished'),
+    uncertain.promise.then(() => 'unconfirmed'),
     new Promise((resolve) => { setTimeout(() => resolve('waiting'), landWaitMs).unref?.(); }),
   ]);
 
@@ -321,12 +396,15 @@ export async function createSession({
       settled,
     };
   }
+  if (receipt?.status === 'unconfirmed') {
+    return { status: 202, body: { ...creationView(receipt), agent, cwd: dir, registered: false, running: null }, settled };
+  }
   if (outcome === 'finished') {
     const { r, s } = await settled;
     return {
       status: 502,
       body: errorBody('create_failed',
-        `会话没建起来：${s.error ?? `${agent} 退出了（退出码 ${r?.code ?? '未知'}）`}`,
+        `会话没建起来：${s.error ?? (landingErrorMessage || `${agent} 退出了（退出码 ${r?.code ?? '未知'}）`)}`,
         `在那台电脑上直接运行一次 ${agent}，确认它能正常对话；报错原文见上。`),
       settled,
     };

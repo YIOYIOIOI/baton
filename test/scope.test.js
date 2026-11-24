@@ -1,14 +1,15 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
+import { tmpDir } from './helpers.js';
 import {
   normPath, under, inScope, scopeRepo,
 } from '../src/scope.js';
 
-// 用当前平台的绝对路径根拼测试路径：win32 得 'C:\\'，posix 得 '/'。
-// 这样这组测试在两个平台上都有意义，只有明确针对 win32 语义的那一条跳过。
-const ROOT = path.parse(process.cwd()).root;
-const p = (...segs) => path.join(ROOT, ...segs);
+// 让不存在的子目录也在临时目录里解析。只有盘根和大小写的用例需要平台语义。
+const workspace = tmpDir();
+const ROOT = path.parse(workspace).root;
+const p = (...segs) => path.join(workspace, ...segs);
 
 test('under：自身与子目录为真', () => {
   assert.equal(under(p('ws', 'friend'), p('ws', 'friend')), true);

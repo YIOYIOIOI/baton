@@ -39,7 +39,7 @@ function decodeWorkspaceUri(raw) {
       return null;
     }
   }
-  return first;
+  return path.isAbsolute(first) ? first : null;
 }
 
 /**
@@ -64,46 +64,39 @@ function decodeWorkspaceUri(raw) {
  * 只读打开（`open: true, readOnly: true`），避免干扰桌面端 WAL 写入；
  * 库不存在或暂时打不开时安静返回空表，不影响其余会话与单测。
  *
- * @param {{ root?: string }} [opts]
- * @returns {{ summaries: Map<string, AntigravitySummary> }}
+ * @param {{ root?: string, directories?: string[], conversationId?: string | null }} [opts]
+ * @returns {{ summaries: Map<string, AntigravitySummary>, byDirectory: Map<string, Map<string, AntigravitySummary>> }}
  */
-export function antigravityApp({ root = GEMINI_ROOT } = {}) {
+export function antigravityApp({ root = GEMINI_ROOT, directories = ['', ...ANTIGRAVITY_PRODUCTS], conversationId = null } = {}) {
   /** @type {Map<string, AntigravitySummary>} */
   const summaries = new Map();
-  if (!root) return { summaries };
+  const byDirectory = new Map();
+  if (!root) return { summaries, byDirectory };
 
-  const candidates = [
-    { product: 'antigravity', file: path.join(root, 'conversation_summaries.db') },
-    ...ANTIGRAVITY_PRODUCTS.map((product) => ({
-      product,
-      file: path.join(root, product, 'conversation_summaries.db'),
-    })),
-  ];
-
-  const seenFiles = new Set();
-  for (const { product, file } of candidates) {
-    const resolved = path.resolve(file);
-    if (seenFiles.has(resolved) || !fs.existsSync(resolved)) continue;
-    seenFiles.add(resolved);
+  for (const directory of directories) {
+    const resolved = path.resolve(root, directory, 'conversation_summaries.db');
+    if (!fs.existsSync(resolved)) continue;
 
     let db;
     try {
       db = new DatabaseSync(resolved, { open: true, readOnly: true });
-      const rows = db.prepare(`
+      const query = `
         SELECT conversation_id, title, workspace_uris, project_id, status,
                not_fully_idle, nesting_depth, killed, parent_conversation_id, last_modified_time
         FROM conversation_summaries
-      `).all();
+      `;
+      const rows = conversationId === null
+        ? db.prepare(query).all()
+        : db.prepare(query + ' WHERE conversation_id = ?').all(conversationId);
 
+      const local = new Map();
+      byDirectory.set(directory, local);
       for (const row of rows) {
         const id = text(row?.conversation_id);
         if (!id) continue;
         const mMs = parseTimeMs(row.last_modified_time);
-        const had = summaries.get(id);
-        if (had && had.lastModifiedMs > mMs) continue;
-
         const parentRaw = text(row.parent_conversation_id);
-        summaries.set(id, {
+        const summary = {
           title: text(row.title),
           cwd: decodeWorkspaceUri(row.workspace_uris),
           projectId: text(row.project_id),
@@ -114,8 +107,10 @@ export function antigravityApp({ root = GEMINI_ROOT } = {}) {
           parentId: parentRaw && parentRaw !== id ? parentRaw : null,
           lastModifiedTime: text(row.last_modified_time),
           lastModifiedMs: mMs,
-          product,
-        });
+          product: directory || 'antigravity',
+        };
+        local.set(id, summary);
+        if (!summaries.has(id) || summaries.get(id).lastModifiedMs <= mMs) summaries.set(id, summary);
       }
     } catch {
       // 库不存在、结构不兼容或损坏，跳过
@@ -127,7 +122,7 @@ export function antigravityApp({ root = GEMINI_ROOT } = {}) {
       }
     }
   }
-  return { summaries };
+  return { summaries, byDirectory };
 }
 
 /**
@@ -135,7 +130,7 @@ export function antigravityApp({ root = GEMINI_ROOT } = {}) {
  * 宿主常把请求包在 `<USER_REQUEST>...</USER_REQUEST>` 里，后跟 `<ADDITIONAL_METADATA>`
  * 与 `<USER_SETTINGS_CHANGE>`。
  */
-export function extractUserRequest(rawContent) {
+export function extractUserRequest(rawContent, { includeInternal = false } = {}) {
   const s = String(rawContent ?? '');
   const m = /<USER_REQUEST>\r?\n?([\s\S]*?)\r?\n?<\/USER_REQUEST>/.exec(s);
   const body = (
@@ -145,7 +140,7 @@ export function extractUserRequest(rawContent) {
         .replace(/<ADDITIONAL_METADATA>[\s\S]*?<\/ADDITIONAL_METADATA>/g, '')
         .replace(/<USER_SETTINGS_CHANGE>[\s\S]*?<\/USER_SETTINGS_CHANGE>/g, '')
   ).trim();
-  if (!body || body.startsWith('<CONTEXT_SUMMARY>') || body.startsWith('<baton_goal_continue>')) return '';
+  if (!includeInternal && (body.startsWith('<CONTEXT_SUMMARY>') || body.startsWith('<baton_goal_continue>'))) return '';
   return body;
 }
 

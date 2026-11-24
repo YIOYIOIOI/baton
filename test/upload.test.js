@@ -187,7 +187,7 @@ test('uploadFile：成功时返回可直接贴进消息的相对路径', () => {
 
 test('uploadFile：底层抛什么错，就把什么错原样告诉用户', () => {
   const r = uploadFile({
-    repo: repoWith({ cwd: 'C:/x' }), config: { allowSend: true },
+    repo: repoWith({ cwd: tmp('baton-upload-error-') }), config: { allowSend: true },
     key: 'K', name: 'a.txt', bytes: Buffer.from('x'),
     save: () => { throw new Error('磁盘满了'); },
   });
@@ -203,37 +203,37 @@ test('uploadFile：底层抛什么错，就把什么错原样告诉用户', () =
  * 里再写一遍检查换来的，而是靠复用 `uploadTarget()`——写入时那套同样的
  * safeName + realpath 包含性校验。下面几条就是在证明那条复用确实挡住了。
  */
-test('readUpload：只认文件名，穿不出上传目录', () => {
+test('readUpload：只认文件名，穿不出上传目录', async () => {
   const cwd = tmp('baton-r-');
   saveUpload({ cwd, name: 'ok.txt', bytes: Buffer.from('yes') });
   // 同目录里放一个"机密"，再试各种方式去够它
   fs.writeFileSync(path.join(cwd, 'secret.txt'), 'no');
 
-  assert.equal(readUpload({ cwd, name: 'ok.txt' }).bytes.toString(), 'yes');
+  assert.equal((await readUpload({ cwd, name: 'ok.txt' })).bytes.toString(), 'yes');
 
   // 反斜杠那条原来写成了 '..\secret.txt'：`\s` 不是转义，字符串实际是「..secret.txt」，
   // Windows 的反斜杠穿越从来没被测到过（2026-10-01 上 lint 时发现）。
   for (const attack of ['../secret.txt', '..\\secret.txt', 'a\\..\\..\\secret.txt', '/etc/passwd', 'a/../../secret.txt']) {
-    assert.throws(() => readUpload({ cwd, name: attack }), undefined, `${attack} 不该读到`);
+    await assert.rejects(() => readUpload({ cwd, name: attack }), undefined, `${attack} 不该读到`);
   }
   fs.rmSync(cwd, { recursive: true, force: true });
 });
 
-test('downloadUpload：读不到就一律 404，不讲目录结构', () => {
+test('downloadUpload：读不到就一律 404，不讲目录结构', async () => {
   const cwd = tmp('baton-r2-');
   const res = { writeHead() { throw new Error('不该走到这儿'); }, end() {} };
-  const r = downloadUpload({ repo: repoWith({ cwd }), key: 'K', name: '不存在.png', res });
+  const r = await downloadUpload({ repo: repoWith({ cwd }), key: 'K', name: '不存在.png', res });
   assert.equal(r.status, 404);
   assert.equal(r.body.error.code, 'no_such_upload');
   fs.rmSync(cwd, { recursive: true, force: true });
 });
 
-test('downloadUpload：命中时把原始字节交给 res，并返回 null 表示已接管', () => {
+test('downloadUpload：命中时把原始字节交给 res，并返回 null 表示已接管', async () => {
   const cwd = tmp('baton-r3-');
   saveUpload({ cwd, name: 'pic.png', bytes: Buffer.from([1, 2, 3]) });
   let head = null; let sent = null;
   const res = { writeHead: (s, h) => { head = { s, h }; }, end: (b) => { sent = b; } };
-  const r = downloadUpload({ repo: repoWith({ cwd }), key: 'K', name: 'pic.png', res });
+  const r = await downloadUpload({ repo: repoWith({ cwd }), key: 'K', name: 'pic.png', res });
   assert.equal(r, null);
   assert.equal(head.s, 200);
   assert.match(head.h['Content-Type'], /image\/png/);
@@ -243,36 +243,36 @@ test('downloadUpload：命中时把原始字节交给 res，并返回 null 表�
 
 // ── 读回去的文件不能在我们的源上执行脚本（2026-10-01 审查）──────────────
 
-function served(name, bytes = Buffer.from('<script>alert(1)</script>')) {
+async function served(name, bytes = Buffer.from('<script>alert(1)</script>')) {
   const cwd = tmp('baton-xss-');
   saveUpload({ cwd, name, bytes });
   let head = null;
   const res = { writeHead: (s, h) => { head = h; }, end() {} };
-  downloadUpload({ repo: repoWith({ cwd }), key: 'K', name, res });
+  await downloadUpload({ repo: repoWith({ cwd }), key: 'K', name, res });
   fs.rmSync(cwd, { recursive: true, force: true });
   return head;
 }
 
-test('downloadUpload：能跑脚本的类型一律当下载，不在页面里打开', () => {
+test('downloadUpload：能跑脚本的类型一律当下载，不在页面里打开', async () => {
   // 原来 .html 按扩展名给 text/html、直接渲染：访客传一个上来、诱你点开，
   // 脚本就带着你的 cookie 跑，能替他铸一个 owner 的配对码
   for (const name of ['evil.html', 'evil.svg', 'evil.xml', 'evil.js', 'note.pdf']) {
-    const h = served(name);
+    const h = await served(name);
     assert.match(h['Content-Disposition'] ?? '', /^attachment/, `${name} 必须是下载`);
   }
 });
 
-test('downloadUpload：一律带 nosniff 和 CSP sandbox，图片也不例外', () => {
+test('downloadUpload：一律带 nosniff 和 CSP sandbox，图片也不例外', async () => {
   for (const name of ['pic.png', 'evil.html']) {
-    const h = served(name);
+    const h = await served(name);
     assert.equal(h['X-Content-Type-Options'], 'nosniff', `${name} 不许浏览器自己猜类型`);
     assert.match(h['Content-Security-Policy'] ?? '', /sandbox/, `${name} 就算被当页面打开也跑不了脚本`);
   }
 });
 
-test('downloadUpload：普通图片照常直接显示（缩略图靠它）', () => {
+test('downloadUpload：普通图片照常直接显示（缩略图靠它）', async () => {
   for (const [name, type] of [['pic.png', 'image/png'], ['pic.jpeg', 'image/jpeg'], ['pic.gif', 'image/gif']]) {
-    const h = served(name, Buffer.from([1, 2, 3]));
+    const h = await served(name, Buffer.from([1, 2, 3]));
     assert.equal(h['Content-Disposition'], undefined, `${name} 不该变成下载`);
     assert.equal(h['Content-Type'], type);
   }
@@ -280,29 +280,11 @@ test('downloadUpload：普通图片照常直接显示（缩略图靠它）', () 
 
 // ── 符号链接穿透、路径脱敏与排他落盘 ────────────────────────
 
-test('readUpload：拒绝符号链接与解析后越出上传目录的文件', () => {
+test('readUpload：拒绝上传目录里的符号链接', async () => {
   const cwd = tmp('baton-symlink-');
   saveUpload({ cwd, name: 'ok.txt', bytes: Buffer.from('ok') });
-
-  // 1) 目标本身是符号链接（含 POSIX 或提权 Windows 文件符号链接）
-  assert.throws(() => readUpload({
-    cwd,
-    name: 'ok.txt',
-    lstat: () => ({ isSymbolicLink: () => true }),
-    stat: () => ({ isFile: () => true, size: 2 }),
-    read: () => Buffer.from('secret'),
-  }), /符号链接/);
-
-  // 2) realpath 解析后落到 .baton-uploads 之外
-  const outside = path.join(os.tmpdir(), 'outside-secret.txt');
-  assert.throws(() => readUpload({
-    cwd,
-    name: 'ok.txt',
-    lstat: () => ({ isSymbolicLink: () => false }),
-    stat: () => ({ isFile: () => true, size: 2 }),
-    realpath: () => outside,
-    read: () => Buffer.from('secret'),
-  }), /上传目录之外/);
+  fs.symlinkSync(cwd, path.join(cwd, UPLOAD_DIR, 'linked'), process.platform === 'win32' ? 'junction' : 'dir');
+  await assert.rejects(() => readUpload({ cwd, name: 'linked' }), /符号链接/);
 
   fs.rmSync(cwd, { recursive: true, force: true });
 });

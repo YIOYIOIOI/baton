@@ -8,8 +8,8 @@ import { downloadSessionFile } from '../src/http/handlers/files.js';
 import { tmpDir } from './helpers.js';
 
 /** 打开之后读出来、关掉。路径安全那几条关心的是「打开的是不是这个文件」。 */
-function readInCwd(cwd, rel) {
-  const f = openInCwd(cwd, rel);
+async function readInCwd(cwd, rel) {
+  const f = await openInCwd(cwd, rel);
   try {
     return { ...f, bytes: fs.readFileSync(f.fd) };
   } finally {
@@ -73,17 +73,17 @@ test('穿不出工作目录：各种写法一律拒绝', () => {
  * 得到 `<盘符>/x`——两种都不在 root 下，所以两边都拒。这条钉的是「不会因为平台
  * 差异悄悄放行」。
  */
-test('前导斜杠被当成相对根，而不是文件系统根', () => {
+test('前导斜杠被当成相对根，而不是文件系统根', async () => {
   const { base, cwd } = tree();
   // `/a.txt` 应当解析成 cwd 下的 a.txt，而不是系统根下的
-  assert.equal(readInCwd(cwd, '/a.txt').bytes.toString(), 'A');
+  assert.equal((await readInCwd(cwd, '/a.txt')).bytes.toString(), 'A');
   fs.rmSync(base, { recursive: true, force: true });
 });
 
-test('反斜杠和正斜杠都收——agent 写出来的两种都有', () => {
+test('反斜杠和正斜杠都收——agent 写出来的两种都有', async () => {
   const { base, cwd } = tree();
-  assert.equal(readInCwd(cwd, 'sub/b.txt').bytes.toString(), 'B');
-  assert.equal(readInCwd(cwd, 'sub\\b.txt').bytes.toString(), 'B');
+  assert.equal((await readInCwd(cwd, 'sub/b.txt')).bytes.toString(), 'B');
+  assert.equal((await readInCwd(cwd, 'sub\\b.txt')).bytes.toString(), 'B');
   fs.rmSync(base, { recursive: true, force: true });
 });
 
@@ -105,10 +105,10 @@ test('目录在前、文件在后，点开头的也列出来', () => {
  * 藏起来只会让人以为文件丢了，而这棵树上的东西本来就是那个 agent 随时能读的——
  * 藏了也只是自欺。owner 明确选了「所有东西都要支持下载」。
  */
-test('.git 里的东西照列照读', () => {
+test('.git 里的东西照列照读', async () => {
   const { base, cwd } = tree();
   assert.ok(listInCwd(cwd, '.git').entries.some((e) => e.name === 'config'));
-  assert.equal(readInCwd(cwd, '.git/config').bytes.toString(), 'GIT');
+  assert.equal((await readInCwd(cwd, '.git/config')).bytes.toString(), 'GIT');
   fs.rmSync(base, { recursive: true, force: true });
 });
 
@@ -129,9 +129,9 @@ test('文件给大小、目录不给', () => {
 
 // ── 读文件 ──────────────────────────────────────
 
-test('把目录当文件读要报出来，不能返回一坨乱七八糟的东西', () => {
+test('把目录当文件读要报出来，不能返回一坨乱七八糟的东西', async () => {
   const { base, cwd } = tree();
-  assert.throws(() => readInCwd(cwd, 'sub'), (e) => e.code === 'ISDIR');
+  await assert.rejects(() => readInCwd(cwd, 'sub'), (e) => e.code === 'ISDIR');
   fs.rmSync(base, { recursive: true, force: true });
 });
 
@@ -141,9 +141,9 @@ test('把文件当目录列也一样', () => {
   fs.rmSync(base, { recursive: true, force: true });
 });
 
-test('不存在就抛，交给上层转 404', () => {
+test('不存在就抛，交给上层转 404', async () => {
   const { base, cwd } = tree();
-  assert.throws(() => readInCwd(cwd, '没有这个.txt'));
+  await assert.rejects(() => readInCwd(cwd, '没有这个.txt'));
   fs.rmSync(base, { recursive: true, force: true });
 });
 
@@ -153,7 +153,7 @@ test('没有工作目录的会话直接拒绝', () => {
 
 // ── 下载：一段一段流出去，不整个读进内存（2026-10-01 审查）──────────────
 
-test('downloadSessionFile：大文件是流出去的，长度照实给', async () => {
+test('downloadSessionFile：大文件分段发送，以实际流量结束响应', async () => {
   // 工作目录里什么都可能有：数据库、视频、构建产物。原来 readFileSync 整个读进来，
   // 1.5 GB 的文件就是 1.5 GB 内存，读的时候整个守护进程卡住；超过 2 GB 还会报错成 404
   const cwd = tmp('baton-dl-');
@@ -165,10 +165,10 @@ test('downloadSessionFile：大文件是流出去的，长度照实给', async (
   res.writeHead = (status, headers) => { head = { status, headers }; };
   const done = new Promise((r) => res.on('finish', r));
   const repo = { getSession: () => ({ cwd }) };
-  assert.equal(downloadSessionFile({ repo, key: 'K', path: 'big.bin', res }), null);
+  assert.equal(await downloadSessionFile({ repo, key: 'K', path: 'big.bin', res }), null);
   await done;
   assert.equal(head.status, 200);
-  assert.equal(head.headers['Content-Length'], big.length);
+  assert.equal(head.headers['Content-Length'], undefined);
   assert.ok(chunks.length > 1, `应当分段写出，实际 ${chunks.length} 段`);
   assert.ok(Buffer.concat(chunks).equals(big));
   fs.rmSync(cwd, { recursive: true, force: true });

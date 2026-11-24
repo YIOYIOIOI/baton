@@ -62,20 +62,27 @@ Override runtime location with `BATON_DIR=/path/to/dir` if needed.
 | `workspacesRoot` | `C:\BatonWorkspaces` / `~/BatonWorkspaces` | Default root proposed for new workspaces |
 
 ### `~/.baton/principals.json`
-Optional array of guest principals with scoped directory allowlists:
+This optional file contains a `guests` array listing the identities that can pair with this host. Each guest has one workspace.
 
 ```json
-[
-  {
-    "id": "reviewer",
-    "name": "Alice",
-    "roots": ["/home/dev/workspace/frontend"],
-    "allowSend": false
-  }
-]
+{
+  "guests": [
+    {
+      "id": "reviewer",
+      "name": "Alice",
+      "root": "/home/dev/workspace/frontend",
+      "allowSend": false
+    }
+  ]
+}
 ```
-- `roots: null` grants full host access (reserved for `owner`).
-- `allowSend: false` restricts that collaborator to read-only observation even when global `allowSend` is `true`.
+
+- `id` is required. Start with a lowercase ASCII letter or digit and use up to 32 lowercase letters, digits, hyphens or underscores. The host reserves `owner`.
+- `name` is an optional nonempty string and defaults to the ID. `root` is an absolute path and defaults to `workspacesRoot/<id>`. Give each guest a separate directory.
+- `allowSend` accepts a JSON boolean. Omit it to inherit the host's setting. Global read-only mode also applies to every guest. Startup reports invalid fields and skipped grants.
+- `credentialVersion` is an optional positive integer. Set it or increase it before assigning the same ID, name and directory to a different person. Restart Baton after editing the file. Changing the name or resolved directory, or removing a guest and restarting before adding them back, also requires pairing again.
+
+At the first upgrade, existing guests keep their paired devices and shared credentials unless an explicit `credentialVersion` requests rotation. Back up `principal-generations.sqlite` and `principal-generations.ready` with the host token, revocation ledger and configuration. If the initialized identity database is unavailable, restore it to resume guest access. The owner can still use the local host token.
 
 ---
 
@@ -84,6 +91,7 @@ Optional array of guest principals with scoped directory allowlists:
 | Variable | Purpose |
 |---|---|
 | `BATON_DIR` | Override `~/.baton` runtime storage directory |
+| `AGY_BIN` | Path to the Antigravity CLI. On Windows, use an absolute host path to the installed executable or batch shim outside the session workspace. Baton also checks the standard Antigravity installation directories and absolute host PATH entries. |
 | `CLAUDE_CONFIG_DIR` | Override default `~/.claude` discovery & credential path |
 | `CODEX_HOME` | Override default `~/.codex` discovery path |
 | `FORCE_JAVASCRIPT_ACTIONS_TO_NODE24` | Used in CI workflows to run actions cleanly on Node 24 |

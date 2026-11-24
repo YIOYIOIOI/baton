@@ -58,14 +58,13 @@ if (!process.env.BATON_TEST_REAL_HOME) {
   });
 }
 
-if (!process.env.BATON_DIR) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), `baton-test-home-${process.pid}-`));
-  process.env.BATON_DIR = dir;
-  process.on('exit', () => {
-    try {
-      fs.rmSync(dir, { recursive: true, force: true });
-    } catch {
-      // 删不掉就算了
-    }
-  });
-}
+// 调用方可能已经指定真实安装目录。每个测试进程只使用、清理自己刚创建的目录。
+const testBatonDir = fs.mkdtempSync(path.join(os.tmpdir(), `baton-test-home-${process.pid}-`));
+process.env.BATON_DIR = testBatonDir;
+process.on('exit', () => {
+  try {
+    fs.rmSync(testBatonDir, { recursive: true, force: true });
+  } catch {
+    // 退出时仍被占用的临时文件留给系统清理。
+  }
+});

@@ -185,6 +185,8 @@ export type Permission = {
 /** `/api/health` 的响应。permissionMode 捎在这里，好让横幅和页面同时出现。 */
 export type Health = {
   ok: boolean;
+  deviceId?: string | null;
+  principal?: { id: string; generation?: string };
   version?: string;
   allowSend: boolean;
   /** 两边各自的档位。横幅要判「有没有哪一边开着全部放行」。 */
@@ -264,6 +266,7 @@ export type BatonEvent = {
 
 export type EventPage = {
   events: BatonEvent[];
+  endOffset: number;
   nextBefore: number | null; // null = 已到最早
 };
 
@@ -284,13 +287,15 @@ export type EventFull = {
  * 把它并进 failed 就等于丢掉了唯一能说清「刚才到底发生了什么」的信息。
  */
 /** handoff：Codex App 开着这个会话、占着写入锁，消息交给了 App 排队（服务端 agent/codexQueue.js） */
-export type TurnStatus = 'running' | 'ok' | 'failed' | 'anomaly' | 'aborted' | 'handoff';
+export type TurnStatus = 'running' | 'ok' | 'failed' | 'anomaly' | 'aborted' | 'handoff' | 'unconfirmed';
 
 export type Turn = {
   key: string;
   turnId: string;
   agent: Agent | null;
   status: TurnStatus;
+  canStop?: boolean;
+  stopReason?: string;
   startedAt: number;
   endedAt: number | null;
   error: string | null;
@@ -474,6 +479,13 @@ export type SendQueued = {
 
 export type SendResult = SendAccepted | SendQueued;
 
+export function isSendAccepted(value: unknown): boolean {
+  if (!value || typeof value !== 'object') return false;
+  const receipt = value as Record<string, unknown>;
+  const id = receipt.queued === true ? receipt.queueId : receipt.queued === false ? receipt.turnId : null;
+  return typeof id === 'string' && id.trim().length > 0;
+}
+
 // ── SSE ────────────────────────────────────────
 
 /** 心跳。queued 捎在这里：队列没有自己的事件通道，且每 15 秒自我纠偏一次。 */
@@ -482,11 +494,14 @@ export type Tick = {
   running: boolean;
   elapsedMs: number;
   queued: number;
+  canStop?: boolean;
+  stopping?: boolean;
 };
 
 export type StreamFrame =
   | { type: 'events'; data: { events: BatonEvent[] } }
   | { type: 'turn_start'; data: Turn }
+  | { type: 'turn_control'; data: Turn }
   | { type: 'turn_end'; data: Turn }
   | { type: 'tick'; data: Tick }
   /**
@@ -509,7 +524,7 @@ export type ApiError = {
 // ── 两根正交的轴（原型的核心洞察）────────────────
 
 /** agent 在不在跑 */
-export type RunAxis = 'streaming' | 'silent' | 'ok' | 'fail' | 'stopped' | 'anomaly';
+export type RunAxis = 'streaming' | 'silent' | 'ok' | 'fail' | 'stopped' | 'anomaly' | 'unconfirmed';
 
 /**
  * 我还连着没。

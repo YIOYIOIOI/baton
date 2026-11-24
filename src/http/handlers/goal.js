@@ -14,7 +14,7 @@ import { errorBody } from '../errors.js';
  * repo.getSession 本来就拿不到。
  */
 export async function setGoal({
-  repo, config, principal, key, objective, clear = false,
+  repo, config, principal, principalOf = null, key, objective, clear = false,
   send = sendMessage, codex = { set: setCodexGoal, clear: clearCodexGoal },
 }) {
   if (config.allowSend !== true) {
@@ -31,7 +31,7 @@ export async function setGoal({
 
   if (clear) {
     if (member.agent === 'claude' || member.agent === 'antigravity') {
-      return send({ repo, config, principal, key, message: '/goal clear' });
+      return send({ repo, config, principal, principalOf, key, message: '/goal clear' });
     }
     try {
       await codex.clear({ threadId: member.providerId });
@@ -44,7 +44,7 @@ export async function setGoal({
   const text = String(objective ?? '').trim();
   if (!text) return { status: 400, body: errorBody('empty_goal', '目标是空的。', '写下要达成的条件再发。') };
   if (member.agent === 'claude' || member.agent === 'antigravity') {
-    return send({ repo, config, principal, key, message: `/goal ${text}` });
+    return send({ repo, config, principal, principalOf, key, message: `/goal ${text}` });
   }
 
   let goal;
@@ -53,6 +53,6 @@ export async function setGoal({
   } catch (err) {
     return { status: 502, body: errorBody('goal_failed', `设目标没成：${err.message}`, '过一会儿再试，或在 Codex App 里设。') };
   }
-  const r = await send({ repo, config, principal, key, message: text });
+  const r = await send({ repo, config, principal, principalOf, key, message: text });
   return { status: r.status, body: { ...r.body, goal } };
 }

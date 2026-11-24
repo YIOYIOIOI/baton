@@ -2,16 +2,22 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { execFile } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { loadConfig, ensureToken, BATON_DIR } from './config.js';
 import { createRepo } from './repo.js';
-import { loadPrincipals, ensureRoots, OWNER_ID } from './principals.js';
+import { loadPrincipals, ensureRoots, OWNER_ID, revokedQueueGrant } from './principals.js';
 import { createAuth } from './http/auth.js';
 import { fileRevocations } from './revocations.js';
 import { fileDevices } from './devices.js';
 import { createServer } from './http/server.js';
 import { missingCredentials, CREDENTIAL_FIX } from './agent/preflight.js';
 import { reconcileOrphans } from './runtime/intents.js';
-import { reconcileRunning } from './runtime/turns.js';
+import { ownedProcessAlive, reconcileRunning, recoverTurn, updateTurnControl } from './runtime/turns.js';
+import { recoveryBirthLookup } from './runtime/processIdentity.js';
+import { acquireInstance, shutdownExecutions } from './runtime/instance.js';
+import { unboundCreationRecovery } from './runtime/creations.js';
+import { desktopRecovery } from './agent/antigravityRun.js';
 import { claudeDefaults } from './agent/defaults.js';
 import { antigravityCatalog } from './agent/catalog.js';
 import { codexSandboxState } from './agent/sandbox.js';
@@ -46,6 +52,13 @@ async function runDaemon(opts) {
   // 最先装：之后任何一处漏网的 Promise 拒绝都不该把整个守护进程带走（见 runtime/guards.js）
   installGuards();
 
+  let lease;
+  try { lease = acquireInstance(BATON_DIR); } catch (error) {
+    console.error(error.message);
+    process.exitCode = 1;
+    return;
+  }
+
   const baseConfig = loadConfig();
   const config = {
     ...baseConfig,
@@ -56,10 +69,11 @@ async function runDaemon(opts) {
   const token = ensureToken();
   // repo 在这里保持未包装：reconcile* 作业需要跨全部身份清理状态
   const repo = createRepo();
-  const { principals, errors: principalErrors } = loadPrincipals();
+  const { principals, errors: principalErrors } = loadPrincipals({ manageGenerations: true });
   const auth = createAuth({
     token,
     principals,
+    revokedQueueGrant,
     revocations: fileRevocations(path.join(BATON_DIR, 'revoked.json')),
     devices: fileDevices(path.join(BATON_DIR, 'devices.json')),
   });
@@ -68,14 +82,16 @@ async function runDaemon(opts) {
 
   let tunnelHandle = null;
   let stopWatch = () => {};
+  let recoveryTimer = null;
   let shuttingDown = false;
-  const shutdown = () => {
+  const shutdown = async () => {
     if (shuttingDown) {
       server.closeAllConnections?.();
-      process.exit(0);
+      return;
     }
     shuttingDown = true;
     stopWatch();
+    clearInterval(recoveryTimer);
     try {
       tunnelHandle?.stop();
     } catch {
@@ -84,20 +100,51 @@ async function runDaemon(opts) {
     server.closeIdleConnections?.();
     const force = setTimeout(() => {
       server.closeAllConnections?.();
-      process.exit(0);
     }, 3000);
     force.unref?.();
-    server.close(() => {
-      clearTimeout(force);
-      process.exit(0);
-    });
+    const httpClosed = new Promise((resolve) => server.close(resolve));
+    await Promise.all([httpClosed, shutdownExecutions()]);
+    clearTimeout(force);
+    lease.release();
+    process.exit(0);
   };
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
 
   server.listen(config.port, config.host, async () => {
-    const reclaimed = reconcileOrphans({ isAlive: () => false });
-    const interrupted = reconcileRunning();
+    if (process.platform === 'win32' && process.env.BATON_WATCHDOG_MANAGED === '1') {
+      const pwsh = path.join(process.env.ProgramW6432 || process.env.ProgramFiles, 'PowerShell', '7', 'pwsh.exe');
+      const register = fileURLToPath(new URL('../scripts/register-daemon.ps1', import.meta.url));
+      execFile(pwsh, ['-NoProfile', '-NonInteractive', '-File', register, '-NodeId', String(process.pid),
+        '-DataDir', BATON_DIR, '-EntryPath', fileURLToPath(import.meta.url), '-Port', String(config.port), '-Address', config.host],
+      { windowsHide: true, timeout: 10000 }, (error) => {
+        if (error) console.warn('无法登记 Windows 守护进程，看门狗将跳过终止操作。');
+      });
+    }
+    const inspectMonitor = desktopRecovery(repo, { onCheckpoint: (turn, monitor) => updateTurnControl(turn.key, turn.turnId, { monitor }) });
+    const birthOf = recoveryBirthLookup();
+    const alive = (pid, turn) => ownedProcessAlive(pid, turn, { birthOf });
+    const retained = new Map();
+    const pendingScans = new Set();
+    const reclaimed = reconcileOrphans({ isAlive: (_id, turn) => turn?.status === 'running' && (turn.canStop === false || alive(turn.childPid, turn)) });
+    const recover = (key = null) => reconcileRunning({ key, alive, inspectMonitor, onRetained: (turn) => retained.set(turn.turnId, turn),
+      onScanError: (failedKey) => pendingScans.add(failedKey) });
+    const interrupted = recover();
+    const observeCreations = unboundCreationRecovery(repo, { principalOf: auth.principalOf, onBound: (turn) => retained.set(turn.turnId, turn) });
+    let unbound = observeCreations();
+    if (retained.size || pendingScans.size || unbound) {
+      recoveryTimer = setInterval(() => {
+        if (unbound) unbound = observeCreations();
+        const retryKeys = Array.from(pendingScans);
+        pendingScans.clear();
+        for (const key of retryKeys) recover(key);
+        for (const [id, turn] of retained) {
+          try { if (recoverTurn(turn, { alive, inspectMonitor })) retained.delete(id); } catch { /* 下次检查重试 */ }
+        }
+        if (!retained.size && !pendingScans.size && !unbound) clearInterval(recoveryTimer);
+      }, 1000);
+      recoveryTimer.unref();
+    }
     reconcileAsks();
     reconcileAskConfigs();
     void claudeDefaults({ effort: getDefaultEffort('claude') });
@@ -184,6 +231,7 @@ async function runDaemon(opts) {
       // ignore
     }
 
+    if (shuttingDown) return;
     reconcileQueues({ repo, config, principalOf: auth.principalOf })
       .then((resumed) => {
         const sent = resumed.filter((r) => r.sent).length;

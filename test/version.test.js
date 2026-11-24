@@ -19,10 +19,12 @@ test('GET /api/health 返回 version 与调用者 principal 概要', async () =>
   const ownerRes = await health.run({ config: { allowSend: true }, principal: OWNER });
   assert.equal(ownerRes.status, 200);
   assert.equal(ownerRes.body.version, VERSION);
+  assert.equal(ownerRes.body.deviceId, null);
   assert.deepEqual(ownerRes.body.principal, { id: OWNER_ID, isOwner: true });
 
-  const guestRes = await health.run({ config: { allowSend: false }, principal: guest });
+  const guestRes = await health.run({ config: { allowSend: false }, principal: guest, deviceId: 'paired-device' });
   assert.equal(guestRes.status, 200);
   assert.equal(guestRes.body.version, VERSION);
+  assert.equal(guestRes.body.deviceId, 'paired-device');
   assert.deepEqual(guestRes.body.principal, { id: 'alice', isOwner: false });
 });

@@ -21,10 +21,10 @@ Baton is designed to run on a developer workstation and expose local agent capab
 - A 256-bit host secret is generated once into `~/.baton/token` (never checked into git, POSIX mode `0600` where applicable).
 - Pairing codes are single-use 12-character CSPRNG strings (60-bit alphabet excluding ambiguous characters `0O1I`), rate-limited against brute-force attempts, and expire cleanly.
 - Paired sessions receive HMAC-SHA256 derived credentials tied to a unique `deviceId` (HttpOnly cookie for web browsers; Bearer credential in Keychain/SecureStore for mobile/native apps).
-- Revoking a device (`POST /api/devices/revoke` or `baton revoke-legacy`) writes its `deviceId` to `~/.baton/revoked.json` using fail-safe state retention and immediately terminates any active SSE streams for that device.
+- Revoking a device with `POST /api/devices/revoke` records its ID in `~/.baton/revoked.json`, closes its active SSE streams and removes its Web Push subscriptions. `baton revoke-legacy` revokes the shared credential for the selected identity.
 
 ### 2. Multi-Principal Workspace Isolation
-- Owner credentials (`roots === null`) represent host-level access; guest principals carry explicit `roots: string[]` lists configured in `~/.baton/principals.json`.
+- Owner credentials represent host-level access. Each entry in the `guests` array in `~/.baton/principals.json` grants access to one workspace through its `root` field.
 - All session listings, transcript reads, directory browsing, file reads/uploads, Markdown exports, queued turn drains, and pushes are re-checked against canonical realpaths (`scope.js` + `sessionfs.js`) to stop directory traversal and symlink escapes.
 - `--read-only` on CLI acts as an immutable ceiling across all principals, disabling turn execution, session creation, directory creation, and uploads.
 

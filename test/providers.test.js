@@ -1,10 +1,23 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import path from 'node:path';
 import {
   claudeSessionFiles, codexRolloutFiles, parseRolloutName, encodeKey, decodeKey,
 } from '../src/providers.js';
 import { tmpDir, writeJsonl } from './helpers.js';
+
+test('枚举后转录被移走时仍返回同目录的其他会话', (t) => {
+  const root = tmpDir();
+  const gone = writeJsonl(root, 'project/gone.jsonl', [{}]);
+  writeJsonl(root, 'project/ok.jsonl', [{}]);
+  const stat = fs.statSync;
+  t.mock.method(fs, 'statSync', (file, ...args) => {
+    if (file === gone && fs.existsSync(gone)) fs.unlinkSync(gone);
+    return stat(file, ...args);
+  });
+  assert.deepEqual(claudeSessionFiles({ root }).map((entry) => entry.providerId), ['ok']);
+});
 
 test('claudeSessionFiles 只取项目目录下一层，跳过 subagents/', () => {
   const root = tmpDir();

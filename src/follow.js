@@ -13,25 +13,6 @@ const MAX_SINGLE_LINE_BYTES = 32 * 1024 * 1024;
  * 吃掉；而空洞太大被夹到上限时，起点落在哪儿全凭字节数，多半在行中间。
  * 对齐只作用于第一次读——之后 offset 又回到精确边界了。
  */
-function findNewlineFrom(file, fromPos, size) {
-  const fd = fs.openSync(file, 'r');
-  try {
-    const step = 64 * 1024;
-    const buf = Buffer.alloc(step);
-    let pos = fromPos;
-    while (pos < size) {
-      const n = fs.readSync(fd, buf, 0, Math.min(step, size - pos), pos);
-      if (n <= 0) break;
-      const idx = buf.subarray(0, n).indexOf(0x0a);
-      if (idx >= 0) return pos + idx;
-      pos += n;
-    }
-    return -1;
-  } finally {
-    fs.closeSync(fd);
-  }
-}
-
 export function createFollower(
   member,
   onEvents,
@@ -45,6 +26,7 @@ export function createFollower(
 ) {
   let timer = null;
   let align = alignFirstRead;
+  let pendingSize = null;
 
   function safeSize() {
     try {
@@ -66,57 +48,44 @@ export function createFollower(
     }
     if (size < offset) {
       offset = size; // 被截断或替换：重新锚定，不尝试解释旧偏移
+      pendingSize = null;
+      align = false;
       return;
     }
-    if (size === offset) return;
+    if (size === offset || size === pendingSize) return;
+    pendingSize = null;
 
     try {
       for (let pass = 0; pass < 8 && offset < size; pass += 1) {
         let chunkEnd = Math.min(size, offset + maxChunkBytes);
-        let { entries } = readRangeWithOffsets(member.file, offset, chunkEnd, {
-          trimPartialFirstLine: align,
-        });
-        // If a single appended JSONL line exceeds maxChunkBytes, expand up to maxSingleLineBytes
-        // so tailing does not stall on a large line.
-        while (!entries.length && chunkEnd < size && chunkEnd - offset < maxSingleLineBytes) {
+        const options = { trimPartialFirstLine: align, completeOnly: true };
+        let batch = readRangeWithOffsets(member.file, offset, chunkEnd, options);
+        while (batch.endOffset === null && !align && chunkEnd < size && chunkEnd - offset < maxSingleLineBytes) {
           const nextEnd = Math.min(size, offset + Math.min(maxSingleLineBytes, (chunkEnd - offset) * 2));
           if (nextEnd === chunkEnd) break;
           chunkEnd = nextEnd;
-          ({ entries } = readRangeWithOffsets(member.file, offset, chunkEnd, {
-            trimPartialFirstLine: align,
-          }));
+          batch = readRangeWithOffsets(member.file, offset, chunkEnd, options);
         }
-        if (!entries.length) {
-          if (align) {
+        if (batch.endOffset === null) {
+          if (align || chunkEnd - offset >= maxSingleLineBytes) {
+            // Discard this oversized record in bounded chunks, even across polls.
             offset = chunkEnd;
-            align = false;
-            return;
+            align = true;
+            continue;
           }
-          if (chunkEnd - offset >= maxSingleLineBytes) {
-            const nlAt = findNewlineFrom(member.file, chunkEnd, size);
-            if (nlAt >= 0) {
-              offset = nlAt + 1;
-              align = false;
-              continue; // Immediately read valid trailing events after the oversized line.
-            }
-            offset = size;
-            align = true; // Trim remainder of oversized partial line on subsequent poll.
-          }
+          pendingSize = size;
           return;
         }
-        align = false; // 只作用于第一次读
-
-        const last = entries.at(-1);
-        const lastEnd = last.offset + Buffer.byteLength(last.line, 'utf8') + 1;
-        if (lastEnd > size) return; // 末行还没写完换行，等下一轮
-
+        align = false;
+        offset = batch.endOffset;
         const events = [];
-        for (const e of entries) {
+        for (const e of batch.entries) {
           events.push(...eventsFor(member, parseLines([e.line]), { offset: e.offset }));
         }
-        offset = lastEnd;
-        if (events.length) onEvents(events);
-        return;
+        if (events.length) {
+          onEvents(events);
+          return;
+        }
       }
     } catch {
       // Non-fatal transient I/O or parse failure during live file rotation.

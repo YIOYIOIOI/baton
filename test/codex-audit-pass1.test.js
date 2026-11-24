@@ -183,7 +183,7 @@ test('#7 & #23 push notify blocks redirects & private DNS and preserves concurre
   ensureKeys();
   const subA = 'https://push.example/ssrf-dead-a';
   const subB = 'https://push.example/concurrent-b';
-  subscribe({ endpoint: subA });
+  subscribe({ endpoint: subA }, 'owner', 'push-test-dev001');
   try {
     let seenInit = null;
     await notify({
@@ -195,7 +195,7 @@ test('#7 & #23 push notify blocks redirects & private DNS and preserves concurre
       lookup: async () => [{ address: '93.184.216.34', family: 4 }],
       fetchImpl: async (_url, init) => {
         seenInit = init;
-        subscribe({ endpoint: subB }); // concurrent subscribe while notify awaits network
+        subscribe({ endpoint: subB }, 'owner', 'push-test-dev001'); // concurrent subscribe while notify awaits network
         return { ok: false, status: 410 };
       },
     });
@@ -269,7 +269,7 @@ test('#9 & #17 createFollower tolerates errors & caps chunk bytes; SSE closes on
   assert.equal(sse.closed, true);
 });
 
-test('#10 openInCwd rejects non-regular files (FIFO/device) before reading', () => {
+test('#10 openInCwd rejects non-regular files (FIFO/device) before reading', async () => {
   const dir = fs.realpathSync(tmpDir());
   const p = path.join(dir, 'file.txt');
   fs.writeFileSync(p, 'ok');
@@ -282,7 +282,7 @@ test('#10 openInCwd rejects non-regular files (FIFO/device) before reading', () 
     return s;
   };
   try {
-    assert.throws(() => openInCwd(dir, 'file.txt'), (err) => err?.code === 'ENOTFILE');
+    await assert.rejects(() => openInCwd(dir, 'file.txt'), (err) => err?.code === 'ENOTFILE');
   } finally {
     fs.statSync = origStat;
   }
@@ -296,7 +296,7 @@ test('#11 cancelQueued enforces allowSend when config is read-only', async () =>
   assert.equal(r.body.error.code, 'send_disabled');
 });
 
-test('#12 & #19 uploadTarget rejects symlinked .baton-uploads before writing .gitignore, and readUpload caps maxBytes', () => {
+test('#12 & #19 uploadTarget rejects symlinked .baton-uploads before writing .gitignore, and readUpload caps maxBytes', async () => {
   const outside = tmpDir();
   const ws = tmpDir();
   try {
@@ -311,15 +311,12 @@ test('#12 & #19 uploadTarget rejects symlinked .baton-uploads before writing .gi
 
   const ws2 = tmpDir();
   fs.mkdirSync(path.join(ws2, '.baton-uploads'), { recursive: true });
-  assert.throws(
+  fs.writeFileSync(path.join(ws2, '.baton-uploads', 'huge.bin'), Buffer.alloc(64));
+  await assert.rejects(
     () => readUpload({
       cwd: ws2,
       name: 'huge.bin',
-      stat: () => ({ isFile: () => true, size: 64 * 1024 * 1024 }),
-      lstat: null,
-      realpath: null,
-      read: () => { throw new Error('must not read oversized upload'); },
-      maxBytes: 32 * 1024 * 1024,
+      maxBytes: 32,
     }),
     (err) => err?.code === 'UPLOAD_TOO_LARGE',
   );
@@ -444,7 +441,7 @@ test('#29 readRangeWithOffsets preserves exact byte offsets across mid-UTF8 star
   assert.equal(entries[1].offset, off3);
 });
 
-test('#30 & #31 & #33 integer limit, code-point exportFilename, and auth rateLimit map pruning', () => {
+test('#30 & #31 & #33 integer limit, code-point exportFilename, and auth rateLimit map pruning', async () => {
   const dir = tmpDir();
   const file = writeJsonl(dir, 'evs.jsonl', [
     { type: 'user', uuid: 'u1', message: { role: 'user', content: '1' } },
@@ -452,7 +449,7 @@ test('#30 & #31 & #33 integer limit, code-point exportFilename, and auth rateLim
     { type: 'user', uuid: 'u3', message: { role: 'user', content: '3' } },
   ]);
   const member = { key: 'claude:lim', agent: 'claude', providerId: '66666666-6666-4666-8666-666666666666', cwd: dir, file };
-  const r = getEvents(makeRepoWithMember(member), member.key, { limit: '1.9' });
+  const r = await getEvents(makeRepoWithMember(member), member.key, { limit: '1.9' });
   assert.equal(r.status, 200);
   assert.equal(r.body.events.length, 1, 'fractional limit must truncate rather than round or stay float');
 

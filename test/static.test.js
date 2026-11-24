@@ -54,6 +54,18 @@ test('真实存在的文件按原样给', () => {
   );
 });
 
+test('公开资源解析排除上传目录及指向其内容的目录别名', () => {
+  const root = siteWithSecret();
+  const uploads = path.join(root, '.baton-uploads');
+  fs.mkdirSync(uploads);
+  fs.writeFileSync(path.join(uploads, 'sample.txt'), 'fixture');
+  fs.symlinkSync(uploads, path.join(root, 'alias'), process.platform === 'win32' ? 'junction' : 'dir');
+  assert.equal(resolveStatic(root, '/.baton-uploads/sample.txt'), null);
+  assert.equal(resolveStatic(root, '/alias/sample.txt'), null);
+  assert.equal(resolveStatic(root, '/%2ebaton-uploads/missing', { spa: true }), null);
+  assert.equal(resolveStatic(root, '/ordinary-route', { spa: true }), path.join(root, 'index.html'));
+});
+
 // ── 路径穿越 ────────────────────────────────────
 
 test('各种穿越写法都拿不到 root 之外的文件', () => {

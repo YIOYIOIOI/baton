@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { BATON_DIR } from '../config.js';
+import { preserveReceipt, withReceipt } from './receipts.js';
 
 // 运行中发消息 = 排队，不是再起一轮。
 //
@@ -50,8 +51,8 @@ function writeAll(dir, key, items) {
   if (items.length === 0) {
     try {
       fs.unlinkSync(file);
-    } catch {
-      // 本来就没有
+    } catch (err) {
+      if (err.code !== 'ENOENT') throw err;
     }
     return;
   }
@@ -64,7 +65,7 @@ function writeAll(dir, key, items) {
  * `front: true` = 插队：放到最前面，这一轮停下后第一个发（2026-11-14，见 handlers/turns.js 的 when:'interrupt'）。
  */
 export function enqueue(
-  { key, text, fork = false, principalId = 'owner', front = false },
+  { key, text, fork = false, principalId = 'owner', principalGeneration = null, request = null, front = false },
   { dir = BATON_DIR, now = Date.now(), maxItems = MAX_QUEUE_ITEMS, maxBytes = MAX_QUEUE_BYTES } = {},
 ) {
   const existing = listQueue(key, { dir });
@@ -73,28 +74,33 @@ export function enqueue(
   }
   const item = {
     id: crypto.randomUUID(), key, text, fork, principalId, queuedAt: now,
+    ...(principalGeneration ? { principalGeneration } : {}),
+    ...(request ? { request } : {}),
   };
   const line = `${JSON.stringify(item)}\n`;
   let existingBytes = 0;
   try {
     existingBytes = fs.statSync(queueFile(dir, key)).size;
-  } catch {
-    existingBytes = 0;
+  } catch (err) {
+    if (err.code !== 'ENOENT') throw err;
   }
   if (existingBytes + Buffer.byteLength(line, 'utf8') > maxBytes) {
     throw new QueueFullError('排队消息总字节数已达上限，请等待当前消息发出或撤回部分排队消息。');
   }
-  fs.mkdirSync(queueDir(dir), { recursive: true });
-  if (front) writeAll(dir, key, [item, ...existing]);
-  else fs.appendFileSync(queueFile(dir, key), line);
-  return item;
+  return withReceipt(item, () => {
+    fs.mkdirSync(queueDir(dir), { recursive: true });
+    if (front) writeAll(dir, key, [item, ...existing]);
+    else fs.appendFileSync(queueFile(dir, key), line);
+    return item;
+  }, { dir, now, durableSource: true });
 }
 
 export function listQueue(key, { dir = BATON_DIR } = {}) {
   let raw;
   try {
     raw = fs.readFileSync(queueFile(dir, key), 'utf8');
-  } catch {
+  } catch (err) {
+    if (err.code !== 'ENOENT') throw err;
     return [];
   }
   const out = [];
@@ -113,12 +119,34 @@ export function listQueue(key, { dir = BATON_DIR } = {}) {
 
 // 取走队首。取走即消失——若随后发送失败，由调用方决定是丢弃还是回退，
 // 不在这里重试，否则一条必然失败的消息会把队列永远堵死。
-export function takeNext(key, { dir = BATON_DIR } = {}) {
+export function takeNext(key, { dir = BATON_DIR, remember = true } = {}) {
   const items = listQueue(key, { dir });
   if (items.length === 0) return null;
   const [head, ...rest] = items;
+  if (remember) preserveReceipt(head, { dir });
   writeAll(dir, key, rest);
   return head;
+}
+
+/** 在一次落盘中提升现有项目；ID、原发送者、分叉及请求回执全部保留。 */
+export function promoteQueueItem(key, id, { dir = BATON_DIR, position = 0 } = {}) {
+  const items = listQueue(key, { dir });
+  const index = items.findIndex((item) => item.id === id);
+  if (index < 0) return null;
+  const item = items[index];
+  if (index !== position) {
+    items.splice(index, 1);
+    items.splice(position, 0, item);
+    writeAll(dir, key, items);
+  }
+  return item;
+}
+
+export function restoreQueueItem(item, { dir = BATON_DIR, position = 0 } = {}) {
+  const items = listQueue(item.key, { dir });
+  if (items.some((queued) => queued.id === item.id)) return;
+  items.splice(position, 0, item);
+  writeAll(dir, item.key, items);
 }
 
 /**
@@ -133,18 +161,20 @@ export function takeNext(key, { dir = BATON_DIR } = {}) {
  *
  * @returns {{ id: string, text: string } | null}
  */
-export function removeQueued(key, id, { dir = BATON_DIR } = {}) {
+export function removeQueued(key, id, { dir = BATON_DIR, remember = true } = {}) {
   const items = listQueue(key, { dir });
   const hit = items.find((i) => i.id === id);
   if (!hit) return null;
+  if (remember) preserveReceipt(hit, { dir });
   writeAll(dir, key, items.filter((i) => i.id !== id));
   return { id: hit.id, text: hit.text };
 }
 
 export function dropQueue(key, { dir = BATON_DIR } = {}) {
-  const n = listQueue(key, { dir }).length;
+  const items = listQueue(key, { dir });
+  for (const item of items) preserveReceipt(item, { dir });
   writeAll(dir, key, []);
-  return n;
+  return items.length;
 }
 
 // 有队列的所有会话。守护进程启动时要遍历它们收尾。

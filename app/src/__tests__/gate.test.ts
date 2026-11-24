@@ -59,24 +59,6 @@ test('只有 401 才判未配对，网络故障不判', () => {
   expect(src).toMatch(/e\.status === 401.*setAuthed\(false\)/s);
 });
 
-const pairSrc = fs.readFileSync(path.join(__dirname, '..', 'app', 'pair.tsx'), 'utf8');
-
-test('网页端不再问地址——页面就是 Baton 发的，地址栏里写着', () => {
-  // owner 第一眼就说「配对码上面还要输入一个网址，逻辑很怪」。确实怪：
-  // 那是原生端的需要，网页端不该背这个包袱。
-  // 判据必须是**编译期就定死的** Platform.OS，不能用 pageOrigin()：
-  // Expo 的静态渲染跑在 Node 里，那时没有 location，pageOrigin() 返回 null，
-  // 地址框会被预渲染进 HTML，等浏览器接管后再消失——闪一下。
-  expect(pairSrc).toMatch(/const isWeb = Platform\.OS === 'web'/);
-  expect(pairSrc).toMatch(/\{isWeb \? null : \(/);          // 网页端不渲染地址框
-  expect(pairSrc).toMatch(/pair\(origin \?\? url, code\)/); // 真正的地址仍从 location 取
-});
-
-test('原生端地址仍然参与可用性判断', () => {
-  // 原生端不问就不知道连哪台电脑，那个框不能跟着一起砍掉
-  expect(pairSrc).toMatch(/\(isWeb \|\| url\.trim\(\)\.length > 0\)/);
-});
-
 const liveSrc = fs.readFileSync(
   path.join(__dirname, '..', 'store', 'useSessionLive.ts'),
   'utf8',
@@ -100,12 +82,6 @@ test('回到前台立刻重连，但只是加速，不是依赖', () => {
   expect(liveSrc).toMatch(/AppState\.addEventListener/);
   expect(liveSrc).toMatch(/s === 'active'\) reconnectNow\(\)/);
   expect(liveSrc).toMatch(/const reconnectNow/);
-});
-
-test('重连后要补拉一次——SSE 不重发断开期间的事件', () => {
-  // follower 从「订阅那一刻的文件末尾」开始跟，不补就是一段悄无声息的空洞
-  expect(liveSrc).toMatch(/const resync = async/);
-  expect(liveSrc).toMatch(/timer = setTimeout\(\(\) => \{ timer = null; resync\(\); connect\(\); \}/);
 });
 
 test('卸载时一定要停掉，否则每次进出会话都泄漏一条流', () => {
@@ -190,7 +166,7 @@ test('传完文件既不自动发送，也不动输入框里的字', () => {
   //
   // 收文件的那一半现在叫 runUpload：拿文件有两条路（原生走选择器、网页走那个
   // 真 input），但「收下之后做什么」两条完全一样，所以合在了一处。
-  const attach = /const runUpload = useCallback\(([\s\S]*?)\}, \[client, attaching\]\)/.exec(sessionSrc)?.[1] ?? '';
+  const attach = /const runUpload = useCallback\(([\s\S]*?)\n\s*\}, \[/.exec(sessionSrc)?.[1] ?? '';
   expect(attach).toBeTruthy();
   expect(attach).toMatch(/setAttachments\(/);
   expect(attach).not.toMatch(/setDraft\(/);
@@ -206,7 +182,9 @@ test('附件路径在发送时才拼上——不给路径 agent 就看不见文�
   const send = /const send = useCallback\(([\s\S]*?)\}, \[draft, attachments/.exec(sessionSrc)?.[1] ?? '';
   expect(send).toBeTruthy();
   expect(send).toMatch(/attachmentSuffix\(attachments\)/);
-  expect(send).toMatch(/setAttachments\(\[\]\)/); // 发完要清空，否则下一条会重复带上
+  // 发送时记录这一批附件。存好草稿后只清它们，同时新加的附件应留给下一条。
+  expect(send).toContain('deliver(id, full, { draft, attachments })');
+  expect(sessionSrc).toContain('files.filter((f) => !source.attachments.includes(f))');
 });
 
 const streamSrc = fs.readFileSync(

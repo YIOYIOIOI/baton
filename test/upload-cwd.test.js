@@ -2,8 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { uploadToCwd } from '../src/http/handlers/files.js';
-import { UPLOAD_DIR, MAX_BYTES } from '../src/upload.js';
+import { uploadFile, uploadToCwd } from '../src/http/handlers/files.js';
+import { saveUpload, UPLOAD_DIR, MAX_BYTES } from '../src/upload.js';
 import { tmpDir } from './helpers.js';
 
 /**
@@ -129,44 +129,34 @@ test('同名不覆盖：第二个变成 -2', () => {
   assert.equal(fs.readFileSync(path.join(cwd, UPLOAD_DIR, 'a.txt'), 'utf8'), 'one', '第一个不该被覆盖');
 });
 
-/**
- * **已知边界，不是回归**：访客 root 下的一个 junction 能把落点带到外面。
- *
- * `inScope` 比的是 `path.resolve` 的结果（`src/scope.js`），不解析链接；而
- * `uploadTarget` 之后才对 cwd 取 realpath。于是「root/jump → 别处」这种链接
- * 通得过 cwd 校验，字节落在链接目标上。
- *
- * 这条**不是**这个端点引入的：`createSession` 用同一个 `inScope`，同一个
- * junction 会让 agent 直接起在那个目标目录里——后果比写一个文件大得多。
- * 所以它是工作区隔离的既有边界（设计文档 §9：「隔离管的是视图，不是 agent」，
- * owner 明确表示朋友可信、不做权限管控）。
- *
- * 这条测试钉的是**现状**，不是「这样是对的」。哪天要收紧，就在 `inScope` 那层
- * 两边都 realpath，然后把这条改成断言 403——那时候 createSession 也要一起改，
- * 而且每次会话列表过滤都会多出 realpath 的系统调用，是一笔要 owner 拍板的账。
- */
-test('已知边界：root 下的 junction 会把落点带到工作区外（与 createSession 同源）', (t) => {
-  if (process.platform !== 'win32') return t.skip('junction 是 Windows 的东西');
-
+test('访客上传按目录实际位置授权', () => {
   const base = tmpDir();
   const root = path.join(base, 'root');
   const outside = path.join(base, 'outside');
   fs.mkdirSync(root);
   fs.mkdirSync(outside);
   const jump = path.join(root, 'jump');
-  try {
-    fs.symlinkSync(outside, jump, 'junction');
-  } catch {
-    return t.skip('这台机器建不了 junction');
-  }
+  fs.symlinkSync(outside, jump, process.platform === 'win32' ? 'junction' : 'dir');
 
   const r = uploadToCwd({
-    config: OK, principal: GUEST(root), cwd: jump, name: 'a.txt', bytes: bytes('escaped'),
+    config: OK, principal: GUEST(root), cwd: jump, name: 'a.txt', bytes: bytes(),
   });
-  assert.equal(r.status, 201, '现状是放行——改成 403 之前先读上面那段');
-  assert.equal(
-    fs.readFileSync(path.join(outside, UPLOAD_DIR, 'a.txt'), 'utf8'), 'escaped',
-    '字节确实落在了链接目标上，而不是 root 里',
-  );
-  return undefined;
+  assert.equal(r.status, 403);
+  assert.equal(r.body.error.code, 'cwd_not_allowed');
+  assert.equal(fs.existsSync(path.join(outside, UPLOAD_DIR)), false);
+});
+
+test('按会话和按目录上传都拒绝把附件写入公开资源树', () => {
+  const site = tmpDir();
+  const cwd = path.join(site, 'assets');
+  fs.mkdirSync(cwd);
+  const alias = path.join(tmpDir(), 'site');
+  fs.symlinkSync(site, alias, process.platform === 'win32' ? 'junction' : 'dir');
+  const save = (args) => saveUpload({ ...args, webRoots: [alias] });
+  const options = { config: OK, cwd, name: 'sample.txt', bytes: bytes(), save };
+  const pre = uploadToCwd({ ...options, principal: OWNER });
+  const session = uploadFile({ ...options, repo: { getSession: () => ({ cwd }) }, key: 'sample' });
+  assert.equal(pre.status, 403);
+  assert.equal(session.status, 403);
+  assert.equal(fs.existsSync(path.join(cwd, UPLOAD_DIR)), false);
 });

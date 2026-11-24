@@ -1,7 +1,8 @@
 import crypto from 'node:crypto';
-import { OWNER, OWNER_ID } from '../principals.js';
+import { OWNER, OWNER_ID, isCurrentPrincipal } from '../principals.js';
 import { memoryRevocations } from '../revocations.js';
 import { memoryDevices } from '../devices.js';
+import { removeDeviceSubscriptions } from '../push.js';
 
 const COOKIE = 'baton_session';
 const ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // 去掉易混的 0O1I
@@ -41,16 +42,16 @@ function credentialFor(token, principalId) {
  */
 const DEVICE_PREFIX = 'd1.';
 
-function deviceMac(token, principalId, deviceId) {
+function deviceMac(token, principalId, deviceId, generation = null) {
   return crypto.createHmac('sha256', token)
-    .update(`baton-device-v1:${principalId}:${deviceId}`).digest('base64url');
+    .update(generation ? `baton-device-v2:${principalId}:${generation}:${deviceId}` : `baton-device-v1:${principalId}:${deviceId}`).digest('base64url');
 }
 
-function mintDeviceCredential(token, principalId) {
+function mintDeviceCredential(token, principal) {
   const deviceId = crypto.randomBytes(12).toString('base64url');
   return {
     deviceId,
-    credential: `${DEVICE_PREFIX}${deviceId}.${deviceMac(token, principalId, deviceId)}`,
+    credential: `${principal.generation ? 'd2.' : DEVICE_PREFIX}${deviceId}.${deviceMac(token, principal.id, deviceId, principal.generation)}`,
   };
 }
 
@@ -74,22 +75,22 @@ function readCookie(header, name) {
  * @param {{ token: string, principals?: object[], now?: () => number, codeTtlMs?: number,
  *   maxFails?: number, globalMaxFails?: number, windowMs?: number,
  *   revocations?: ReturnType<typeof memoryRevocations>,
- *   devices?: ReturnType<typeof memoryDevices> }} opts
+ *   devices?: ReturnType<typeof memoryDevices>, revokedQueueGrant?: (id: string, generation: string | null) => boolean }} opts
  *   revocations  被解除的设备表。守护进程传 ~/.baton/revoked.json 那份（cli.js），
  *                不传就是一张空的内存表——和加这个功能之前的行为一致。
  */
 export function createAuth({
   token, principals = [OWNER], now = () => Date.now(), codeTtlMs = 600000,
   maxFails = 10, globalMaxFails = 30, windowMs = 60000,
-  revocations = memoryRevocations(), devices = memoryDevices(),
+  revocations = memoryRevocations(), devices = memoryDevices(), revokedQueueGrant = null,
 }) {
   if (!token) throw new Error('createAuth 需要 token');
 
-  // id -> { principal, credential }。身份集合在进程启动时定死，改 principals.json
-  // 要重启——这也正是「从表里删掉一条即刻吊销」能成立的原因。
+  // 配置在启动时载入；验证已配对访客时另查持久化代际，防止沿用其他进程已撤销的授权。
   const byId = new Map();
   for (const p of principals) {
-    byId.set(p.id, { principal: p, credential: credentialFor(token, p.id) });
+    const credential = !p.generation || p.acceptLegacy ? credentialFor(token, p.id) : null;
+    byId.set(p.id, { principal: p, credential });
   }
 
   const codes = new Map(); // code -> { expiresAt, principalId }
@@ -100,28 +101,37 @@ export function createAuth({
   // 只能透露「匹配到的是第几个身份」，对攻击者无用。
   //
   // 返回 { principal, deviceId }：deviceId 为 null 表示是升级前那种共用凭据。
-  // **吊销在这里判**，cookie 和 bearer 两条路都经过它，漏不掉。
-  function identify(value) {
+  // 这里只核签名。鉴权还需经过下面的 identify 检查吊销状态。
+  function signedCredential(value) {
     const v = String(value ?? '');
-    if (v.startsWith(DEVICE_PREFIX)) {
+    const hasGeneration = v.startsWith('d2.');
+    if (hasGeneration || v.startsWith(DEVICE_PREFIX)) {
       const rest = v.slice(DEVICE_PREFIX.length);
       const dot = rest.indexOf('.');
       if (dot <= 0) return null;
       const deviceId = rest.slice(0, dot);
       const mac = rest.slice(dot + 1);
       for (const { principal } of byId.values()) {
-        if (timingSafeEqual(mac, deviceMac(token, principal.id, deviceId))) {
-          return revocations.isRevoked(deviceId) ? null : { principal, deviceId };
+        if (hasGeneration ? !principal.generation : principal.generation && !principal.acceptLegacy) continue;
+        if (timingSafeEqual(mac, deviceMac(token, principal.id, deviceId, hasGeneration ? principal.generation : null))) {
+          return { principal, deviceId };
         }
       }
       return null;
     }
     for (const { principal, credential } of byId.values()) {
-      if (timingSafeEqual(v, credential)) {
-        return revocations.isLegacyRevoked(principal.id) ? null : { principal, deviceId: null };
+      if (credential && timingSafeEqual(v, credential)) {
+        return { principal, deviceId: null };
       }
     }
     return null;
+  }
+
+  function identify(value) {
+    const hit = signedCredential(value);
+    if (!hit || !isCurrentPrincipal(hit.principal)) return null;
+    const revoked = hit.deviceId ? revocations.isRevoked(hit.deviceId) : revocations.isLegacyRevoked(hit.principal.id);
+    return revoked ? null : hit;
   }
 
   /** 请求里出示的凭据：cookie 优先，其次 Authorization: Bearer。 */
@@ -132,6 +142,10 @@ export function createAuth({
   }
 
   const revokeListeners = new Set();
+  function currentPrincipal(id) {
+    const p = byId.get(id)?.principal;
+    return p && isCurrentPrincipal(p) ? p : null;
+  }
   const emitRevoke = (ev) => {
     for (const fn of revokeListeners) {
       try {
@@ -142,13 +156,30 @@ export function createAuth({
     }
   };
 
+  function revokePairedDevice(deviceId, principalId) {
+    const changed = revocations.revoke(deviceId, principalId) !== false;
+    if (changed) emitRevoke({ deviceId, principalId });
+    try { removeDeviceSubscriptions(deviceId); }
+    catch (err) { console.error('[baton] 已吊销设备，但清理推送订阅时出错。', err.message); }
+    try {
+      devices.remove(deviceId);
+    } catch (err) {
+      // 凭据已经从账本吊销；设备清单同样会按账本过滤。
+      console.error('[baton] 已吊销设备，但清理设备清单时出错。', err.message);
+    }
+    return changed;
+  }
+
   return {
     principalIds() {
-      return [...byId.keys()];
+      return [...byId.keys()].filter(currentPrincipal);
     },
 
-    principalOf(id) {
-      return byId.get(id)?.principal ?? null;
+    principalOf(id, queuedGeneration = undefined) {
+      const principal = currentPrincipal(id);
+      // Queue recovery distinguishes a temporarily unverifiable grant from a confirmed removal.
+      if (!principal && queuedGeneration !== undefined && revokedQueueGrant && !revokedQueueGrant(id, queuedGeneration)) return undefined;
+      return principal;
     },
 
     onRevoke(fn) {
@@ -157,7 +188,7 @@ export function createAuth({
     },
 
     isSessionValid({ deviceId = null, principalId = null, isLegacy = false } = {}) {
-      if (principalId && !byId.has(principalId)) return false;
+      if (principalId && !currentPrincipal(principalId)) return false;
       if (deviceId) return !revocations.isRevoked(deviceId);
       if (isLegacy && principalId) return !revocations.isLegacyRevoked(principalId);
       return true;
@@ -169,7 +200,7 @@ export function createAuth({
       const t = now();
       for (const [c, entry] of codes) if (t > entry.expiresAt) codes.delete(c);
 
-      if (!byId.has(principalId)) {
+      if (!currentPrincipal(principalId)) {
         throw new Error(`没有这个身份：${principalId}`);
       }
 
@@ -194,12 +225,12 @@ export function createAuth({
       if (entry === undefined) {
         return { ok: false, reason: '配对码无效或已被使用。请在电脑终端重新获取一个。' };
       }
-      codes.delete(normalized); // 一次性
       if (now() > entry.expiresAt) {
+        codes.delete(normalized);
         return { ok: false, reason: '配对码已过期（有效期 10 分钟）。请在电脑终端重新获取。' };
       }
       const hit = byId.get(entry.principalId);
-      if (!hit) {
+      if (!hit || !isCurrentPrincipal(hit.principal)) {
         // 铸码之后 principals.json 被改过并重启了。重启会清空 codes，所以这条
         // 不该发生；留着是因为静默下发一个没有身份的凭据比报错糟得多。
         return {
@@ -209,8 +240,9 @@ export function createAuth({
       }
       // 每次配对一张新的设备凭据（不再是同一身份共用的那个值），解除时才能只作废这一台。
       // 升级前配过的设备手里还是共用凭据，照样认（identify 的第二段），不用重新配对。
-      const { deviceId, credential } = mintDeviceCredential(token, hit.principal.id);
-      devices.register({ deviceId, principalId: hit.principal.id, userAgent, now: now() });
+      const { deviceId, credential } = mintDeviceCredential(token, hit.principal);
+      devices.register({ deviceId, principalId: hit.principal.id, generation: hit.principal.generation, userAgent, now: now() });
+      codes.delete(normalized); // 登记成功才消耗一次性配对码。
       const secAttr = secure ? '; Secure' : '';
       const attrs = `${COOKIE}=${credential}; Path=/; HttpOnly${secAttr}; SameSite=Lax; Max-Age=31536000`;
       // bearer 与 cookie 是同一个值（由 token 派生的 HMAC，不是 token 本身）。
@@ -242,16 +274,14 @@ export function createAuth({
 
     revoke(req) {
       let kind = 'none';
-      for (const value of presented(req)) {
+      for (const value of new Set(presented(req))) {
         if (timingSafeEqual(value, token)) continue; // 本机 token 不归这里管
-        const hit = identify(value);
+        // 这里核验出示的签名后直接请求持久化。账本不可用时应报错，让客户端能重试。
+        const hit = signedCredential(value);
         if (!hit) continue;
         if (hit.deviceId) {
-          revocations.revoke(hit.deviceId, hit.principal.id);
-          devices.remove(hit.deviceId);
-          emitRevoke({ deviceId: hit.deviceId, principalId: hit.principal.id });
-          kind = 'device';
-        } else if (kind === 'none') {
+          if (revokePairedDevice(hit.deviceId, hit.principal.id)) kind = 'device';
+        } else if (kind === 'none' && !revocations.isLegacyRevoked(hit.principal.id)) {
           kind = 'legacy';
         }
       }
@@ -259,14 +289,16 @@ export function createAuth({
     },
 
     listDevices({ principalId = null } = {}) {
-      return devices.list({ principalId }).filter((d) => !revocations.isRevoked(d.id));
+      return devices.list({ principalId }).filter((d) => {
+        const principal = currentPrincipal(d.principalId);
+        return principal && (d.generation ? d.generation === principal.generation : !principal.generation || principal.acceptLegacy)
+          && !revocations.isRevoked(d.id);
+      });
     },
 
     revokeDevice(deviceId, principalId = OWNER_ID) {
       if (!deviceId) return false;
-      revocations.revoke(deviceId, principalId);
-      devices.remove(deviceId);
-      emitRevoke({ deviceId, principalId });
+      revokePairedDevice(deviceId, principalId);
       return true;
     },
 

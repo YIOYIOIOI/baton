@@ -925,7 +925,7 @@ rollout 里另有 `event_msg` 的 `item_completed`，`CommandExecution` 带着 `
 
 ### 23.4 运行与权限双通道
 
-- **主通道（官方插件 Sidecar）**：Baton 在 `sidecars/baton-bridge/` 提供合法的 Antigravity 插件（包含 `bridge` sidecar，利用 Antigravity 内置 `agentapi` 暴露的 `newConversation` / `sendUserMessage`），只复制文件至 `~/.gemini/config/plugins/baton-bridge/`，**绝不触碰 `~/.gemini/config/config.json`**。Sidecar 仅监听 `127.0.0.1` 临时端口、强制 `~/.baton/token` Bearer 鉴权，并把自身 `{ pid, port, projectId }` 写入 `~/.baton/antigravity-bridges/<pid>.json`。
+- **主通道（官方插件 Sidecar）**。Baton 将 `sidecars/baton-bridge/` 同步到 `~/.gemini/config/plugins/baton-bridge/`。插件通过宿主的 `agentapi` 创建和续聊会话。桥接协议 v2 固定监听 `127.0.0.1` 临时端口，每次启动在 `~/.baton/antigravity-bridges/<pid>.json` 登记独立实例标识与密钥。Baton 用一次性挑战验证实例，随后用 HMAC-SHA256 验证每次调用和回执。升级后需重启 Antigravity 桌面端一次，重启前可经已安装的 `agy` 继续对话。
 - **回退通道（`agy` CLI）**：`antigravity-cli/` 会话或桌面桥接未启动时回退系统 `agy` 可执行文件（`--input-format=stream-json --output-format=stream-json --print= [--conversation <id>]`）。
 - 权限模式：`default` / `plan`（`--mode plan`）/ `edits`（`--mode accept-edits`）/ `bypass`（`--dangerously-skip-permissions`）。
 - 思考强度：`agy.exe` 原生支持 `--effort (low|medium|high|xhigh|max)`。

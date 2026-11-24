@@ -22,8 +22,8 @@ import './sessionconfig.css';
  *
  * | | 落在哪 | 谁能改 |
  * |---|---|---|
- * | 模型 | **会话**（两台设备看到同一个选择） | 任何配对设备 |
- * | 思考强度 | 会话 | 任何配对设备 |
+ * | 模型 | **会话**（两台设备看到同一个选择） | 有效 allowSend 为 true 的身份 |
+ * | 思考强度 | 会话 | 有效 allowSend 为 true 的身份 |
  * | 权限档位 | **全局、按 agent** | **只有 owner** |
  *
  * 权限那一格是全局的：改它会影响这台电脑上所有会话的下一轮。面板里如实写明，
@@ -101,6 +101,9 @@ export function SessionConfig(props: Props) {
   const [err, setErr] = useState<ApiError | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [grant, setGrant] = useState<{ key: string; allowSend: boolean } | null>(null);
+  const allowSend = grant && grant.key === sessionKey ? grant.allowSend : null;
+  const readOnlyPreferences = props.mode === 'session' && allowSend !== true;
   const [modelRefresh, setModelRefresh] = useState(0);
 
   const load = useCallback(() => {
@@ -114,6 +117,13 @@ export function SessionConfig(props: Props) {
   }, [sessionKey, agent]);
 
   useEffect(load, [load]);
+
+  useEffect(() => {
+    if (!sessionKey || !open) return;
+    let current = true;
+    api.health().then((h) => { if (current) setGrant({ key: sessionKey, allowSend: h.allowSend === true }); }).catch(() => {});
+    return () => { current = false; };
+  }, [sessionKey, open]);
 
   useEffect(() => {
     let current = true;
@@ -225,7 +235,7 @@ export function SessionConfig(props: Props) {
         className={`cfg-bar${open ? ' is-open' : ''}`}
         aria-haspopup="dialog"
         aria-expanded={open}
-        onClick={() => { setOpen(true); setModelRefresh((revision) => revision + 1); }}
+        onClick={() => { setGrant(null); setOpen(true); setModelRefresh((revision) => revision + 1); }}
       >
         <span className="cfg-agent">{agent}</span>
         {/* null = 没选过。「没选过」与「选了正好等于默认」要显示得不一样：
@@ -252,7 +262,7 @@ export function SessionConfig(props: Props) {
             <>
               {/* 点一下就生效，没有「保存」——这个按钮只是关掉。写明这一点，
                   免得人以为不点它刚才的选择就不算数 */}
-              <span className="cfg-foot-note">点一下就生效</span>
+              {(!readOnlyPreferences || perm?.canSet) && <span className="cfg-foot-note">点一下就生效</span>}
               <button type="button" className="dlg-ok" onClick={() => setOpen(false)}>完成</button>
             </>
           )}
@@ -288,18 +298,18 @@ export function SessionConfig(props: Props) {
 
               <Group
                 title="模型"
-                hint={props.mode === 'draft' ? '建会话时一并带上' : '落在这个会话上，两台设备看到同一个选择'}
+                hint={props.mode === 'draft' ? '建会话时一并带上' : allowSend === false ? '当前身份只能查看模型和思考强度' : '落在这个会话上，两台设备看到同一个选择'}
               >
                 <Row
                   on={!model}
                   onPick={() => pickModel(null)}
-                  busy={busy}
+                  busy={busy || readOnlyPreferences}
                   label={`用 ${agent} 自己的默认`}
                   desc={dmLabel
                     ? `现在是 ${dmLabel}${dm?.effort ? ` · ${effortLabel(dm.effort)}` : ''}`
                     : undefined}
                 />
-                <ModelRows models={models} current={model} busy={busy} onPick={pickModel} />
+                <ModelRows models={models} current={model} busy={busy || readOnlyPreferences} onPick={pickModel} />
               </Group>
             </div>
 
@@ -310,7 +320,7 @@ export function SessionConfig(props: Props) {
                   <Row
                     on={!effort}
                     onPick={() => pickEffort(null)}
-                    busy={busy}
+                    busy={busy || readOnlyPreferences}
                     label="跟模型默认走"
                     desc={defaultEffort ? `现在是 ${effortLabel(defaultEffort)}` : undefined}
                   />
@@ -319,7 +329,7 @@ export function SessionConfig(props: Props) {
                       key={e}
                       on={effort === e}
                       onPick={() => pickEffort(e)}
-                      busy={busy}
+                      busy={busy || readOnlyPreferences}
                       label={effortLabel(e)}
                     />
                   ))}

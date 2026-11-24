@@ -25,7 +25,7 @@ import { useSlashMenu } from '@/components/SlashMenu';
 import { useModels } from '@/store/useModels';
 import { Live } from '@/components/Live';
 import {
-  pickAndUpload, uploadPicked, pickedFromFiles, attachmentSuffix,
+  pickAndUpload, uploadPicked, pickedFromFiles, attachmentSuffix, splitAttachments,
   type Attachment, type PickSource, type UploadBatch,
 } from '@/store/attach';
 import { Attachments } from '@/components/Attachments';
@@ -34,12 +34,14 @@ import {
   Caught, CommandOutput, GoalRow, Interrupted, MsgText, MsgUser, PendingMsg, Thinking, ToolCall, TurnEnd, TurnError, TurnFoot,
   TurnSummary,
 } from '@/components/stream';
-import { useConnection } from '@/store/connection';
+import { canSendFor, useConnection } from '@/store/connection';
 import { SetupPill } from '@/components/Setup';
-import { usePermission } from '@/store/permission';
 import { useSessionLive } from '@/store/useSessionLive';
 import { getSecret, setSecret } from '@/store/secure';
-import { useDraft, useDraftAttachments } from '@/store/drafts';
+import { commitSubmittedDraft, persistNextDraft, useDraft, useDraftAttachments, useDraftScope } from '@/store/drafts';
+import { beginMobileSend, clearMobileSend, readMobileSends } from '@/store/mobilePending';
+import { canRetrySend } from '@/api/sendWindow';
+import { deliverMessage } from '@/api/delivery';
 import { BatonError } from '@/api/client';
 import { segment } from '@/api/runs';
 import type { BatonEvent, Effort, QueuedMessage } from '@/api/types';
@@ -96,7 +98,10 @@ function saveDismissed() {
  * 2026-11-10 之前是「记录里有同样一句就算到了」，于是又发一遍「继续」时，上一回那句「继续」
  * 当场把这条顶掉：先看到思考动画，消息过几秒才冒出来（owner 报的就是这个）。
  */
-type Pending = { id: string; text: string; failed: boolean; error: string | null; before?: Set<string> };
+type Pending = {
+  id: string; text: string; failed: boolean; error: string | null; before?: Set<string>;
+  accepted?: boolean; queueId?: string; syncPending?: boolean; retryDisabled?: boolean;
+};
 
 /**
  * 三档视图，和 Claude Code 桌面端一致（那边叫 Summary / Normal / Verbose，
@@ -123,6 +128,7 @@ export default function SessionScreen() {
   const [open, setOpen] = useState<Set<string>>(new Set());
   const [attaching, setAttaching] = useState(false);
   const [attachErr, setAttachErr] = useState<string | null>(null);
+  const [stopReply, setStopReply] = useState<{ turnId: string; note: string; stopping?: boolean } | null>(null);
   // 待发送的附件。不塞进草稿——发送那一刻才把路径拼到正文末尾。
   // 和草稿一样按会话存在这一屏之外，返回再进来还在（见 store/drafts.ts）
   const [attachments, setAttachments] = useDraftAttachments(key);
@@ -149,6 +155,9 @@ export default function SessionScreen() {
    * 好像在回来的时候字会消失」——返回就卸载，字跟着没了。见 store/drafts.ts。
    */
   const [draft, setDraft] = useDraft(key);
+  const draftOwner = useDraftScope();
+  const allowSend = useConnection((s) =>
+    s.principalAccess && s.principalAccess.scope === draftOwner ? s.principalAccess.allowSend : null);
   /** 输入框里的光标（`/` 菜单看的是光标所在那个词）和插入之后要放回的位置 */
   const [caret, setCaret] = useState(0);
   const [forceSel, setForceSel] = useState<{ start: number; end: number } | undefined>(undefined);
@@ -160,7 +169,17 @@ export default function SessionScreen() {
    * 「请求成功但记录还没落盘」的那一小段里会让消息**闪一下消失**。
    */
   const [pending, setPending] = useState<Pending[]>([]);
-  const [allowSend, setAllowSend] = useState<boolean | null>(null);
+  useEffect(() => {
+    if (!draftOwner) { setPending([]); return; }
+    try {
+      setPending(readMobileSends(draftOwner, key).map((entry) => {
+        const expired = !canRetrySend(entry.startedAt);
+        return { id: entry.id, text: entry.text, failed: true, retryDisabled: expired, error: trNew(expired ? 'session.expiredSend' : 'session.unconfirmedSend') };
+      }));
+    } catch { setPending([{ id: 'storage-error', text: '', failed: true, retryDisabled: true, error: trNew('session.pendingStorage') }]); }
+    // Rehydrate only on entering a session or changing identity.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draftOwner, key]);
   const scRef = useRef<ScrollView>(null);
   const initialScrollDone = useRef(false);
   const barH = useFloatBarHeight();
@@ -168,12 +187,7 @@ export default function SessionScreen() {
   const kbInset = useKeyboardInset(inset.bottom);
 
   useEffect(() => {
-    client?.health().then((h) => {
-      setAllowSend(h.allowSend);
-      // 这一屏可能被推送直接唤起、没经过列表，所以横幅要靠这次 health 立起来。
-      // 不另开 /api/permission：同一件事问两遍，两次之间还可能不一致。
-      usePermission.getState().fromHealth(h);
-    }).catch(() => {});
+    void client?.health().catch(() => {});
     // 这条会话属于哪条链、链上有几个。列表行按设计不许出现任何文字，
     // 所以「有分叉」这件事只能在这里露出来。
     client?.sessions()
@@ -217,6 +231,14 @@ export default function SessionScreen() {
   );
 
   const running = live.turn?.status === 'running';
+  const currentTick = live.tick?.turnId === live.turn?.turnId ? live.tick : null;
+  const reply = running && stopReply?.turnId === live.turn?.turnId ? stopReply : null;
+  const monitorOnly = live.turn?.canStop === false || currentTick?.canStop === false || reply?.stopping === false;
+  const stopping = live.turn?.stopReason || currentTick?.stopping || reply?.stopping;
+  const canInterrupt = !running || (!monitorOnly && !stopping);
+  const stopNote = running && (monitorOnly
+    ? trNew('session.stopOnDesktop')
+    : stopping ? trNew('session.stopping') : reply?.note);
 
   /**
    * 一轮**在眼前**跑完时震一下：成功一下轻的、失败一下错误型。haptics.ts 抬头早就把
@@ -255,18 +277,40 @@ export default function SessionScreen() {
    * 旧版这里的 catch 只认 `send_disabled`，其余（网络失败、超时、500）全部吞掉：
    * 屏幕上一个字都不显示、草稿还留在框里，owner 实测就是「点击发送没有响应」。
    */
-  const deliver = useCallback(async (id: string, full: string) => {
-    if (!client) return;
+  const deliver = useCallback(async (id: string, full: string, source?: { draft: string; attachments: typeof attachments }) => {
+    if (!client || !draftOwner || !canSendFor(client, draftOwner)) return;
     setPending((prev) => prev.map((p) => (p.id === id ? { ...p, failed: false, error: null } : p)));
     try {
-      await client.send(key, full);
-      await live.refreshState();
+      const entry = readMobileSends(draftOwner, key).find((r) => r.id === id);
+      if (!entry || entry.text !== full) throw new Error(trNew('session.pendingStorage'));
+      if (!canRetrySend(entry.startedAt)) {
+        setPending((prev) => prev.map((p) => p.id === id ? { ...p, failed: true, retryDisabled: true, error: trNew('session.expiredSend') } : p));
+        return;
+      }
+      try {
+        commitSubmittedDraft(entry, source?.draft ?? entry.sourceDraft ?? splitAttachments(full).body, !!source);
+        if (source) setAttachments((files) => files.filter((f) => !source.attachments.includes(f)));
+        else if (!entry.draftConsumed) {
+          const sent = new Set(splitAttachments(full).files.map((f) => f.relative));
+          if (sent.size) setAttachments((files) => files.filter((f) => !sent.has(f.relative)));
+        }
+      } catch { throw new Error(trNew('session.pendingStorage')); }
+      const { refreshed } = await deliverMessage(client, key, entry.id, entry.text, live.refreshState, (result) => {
+        try { persistNextDraft(draftOwner, key); } catch { throw new Error(trNew('session.pendingStorage')); }
+        clearMobileSend(draftOwner, key, entry.id);
+        setPending((prev) => prev.map((p) => p.id === id
+          ? { ...p, accepted: true, queueId: result.queued ? result.queueId : undefined } : p));
+      }, entry.fork, entry.when);
+      if (!refreshed) setPending((prev) => prev.map((p) => p.id === id ? { ...p, syncPending: true } : p));
     } catch (e) {
-      const msg = e instanceof BatonError ? e.message : (e as Error).message;
-      if (e instanceof BatonError && e.code === 'send_disabled') setAllowSend(false);
+      const msg = e instanceof Error && e.message === 'send_unconfirmed' ? trNew('session.unconfirmedSend') : (e as Error).message;
+      if (e instanceof BatonError && e.code === 'send_disabled') {
+        useConnection.setState((s) => s.client === client && s.principalAccess?.scope === draftOwner
+          ? { principalAccess: { scope: draftOwner, allowSend: false } } : s);
+      }
       setPending((prev) => prev.map((p) => (p.id === id ? { ...p, failed: true, error: msg } : p)));
     }
-  }, [client, key, live]);
+  }, [client, draftOwner, key, live, setAttachments, trNew]);
 
   /**
    * 发送。**同步的**——点下去立刻成为气泡、立刻清空输入框，不等网络往返。
@@ -296,21 +340,38 @@ export default function SessionScreen() {
         failed: true,
         error: '还没和电脑配对。到「关于」里重新扫一次配对码。',
       }]);
-      setDraft('');
       return;
     }
+    if (!canSendFor(client, draftOwner)) return;
     // 路径在发送这一刻才拼上去。agent 只认磁盘路径，不给它路径就看不见文件。
     const full = text + attachmentSuffix(attachments);
-    const id = `p${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    let id: string;
+    try {
+      const entry = beginMobileSend(draftOwner, key, full, false, 'auto', draft);
+      id = entry.id;
+      if (!canRetrySend(entry.startedAt)) {
+        setPending((prev) => [...prev.filter((p) => p.id !== id), { id, text: full, failed: true, retryDisabled: true, error: trNew('session.expiredSend') }]);
+        return;
+      }
+    }
+    catch {
+      setPending((prev) => [...prev.filter((p) => p.id !== 'storage-error'), { id: 'storage-error', text: full, failed: true, retryDisabled: true, error: trNew('session.pendingStorage') }]);
+      return;
+    }
     const before = new Set(live.events.filter((e) => e.kind === 'text' && e.role === 'user').map((e) => e.id));
-    setPending((prev) => [...prev, { id, text: full, failed: false, error: null, before }]);
-    setDraft('');
-    setAttachments([]);
-    void deliver(id, full);
-  }, [draft, attachments, client, deliver, live]);
+    setPending((prev) => [...prev.filter((p) => p.id !== id), { id, text: full, failed: false, error: null, before }]);
+    void deliver(id, full, { draft, attachments });
+  }, [draft, attachments, client, deliver, draftOwner, key, live, trNew]);
 
-  const stop = useCallback(() => {
-    if (client && live.turn) client.stop(key, live.turn.turnId).catch(() => {});
+  const stop = useCallback(async () => {
+    if (!client || !live.turn) return;
+    const { turnId } = live.turn;
+    try {
+      const r = await client.stop(key, turnId);
+      if (r.note) setStopReply({ turnId, note: r.note, stopping: r.stopping });
+    } catch (e) {
+      setAttachErr((e as Error).message);
+    }
   }, [client, key, live.turn]);
 
   /**
@@ -332,25 +393,17 @@ export default function SessionScreen() {
   }, [client, key, live]);
 
   /**
-   * 「插队」：从队列里拿出来，带 when:'interrupt' 再发一次——Baton 自己那一轮在跑就先停下它，这条第一个发；
-   * 在等电脑上那一轮时就是原来的「立刻发」（服务端 handlers/turns.js）。
-   * owner 2026-11-14：「还是不能自己选择插队还是排队啊」——原来 Baton 自己那轮在跑时这颗不给。
-   *
-   * 顺序不能反。先撤再发：撤掉之后看门狗就取不到它了，不会出现「撤回的路上被发出去」
-   * 这种两头都发的情况。撤成功而发失败时如实报错——那条消息此刻既不在队列里也没发出，
-   * 人必须知道。
+   * 提升服务端已有的队列项，失败时保留原来的队列消息。
    */
   const sendNow = useCallback(async (item: QueuedMessage) => {
     if (!client) return;
-    live.setQueued((prev) => prev.filter((q) => q.id !== item.id));
     try {
-      await client.cancelQueued(key, item.id);
-      await client.send(key, item.text, false, 'interrupt');
+      await client.promoteQueued(key, item.id);
     } catch (e) {
-      live.refreshState().catch(() => {});
-      setAttachErr(e instanceof BatonError ? e.message : '没发出去，刷新看看它现在在哪。');
+      setAttachErr(e instanceof BatonError ? e.message : trNew('session.promoteFailed'));
     }
-  }, [client, key, live]);
+    void live.refreshState().catch(() => {});
+  }, [client, key, live, trNew]);
 
   /**
    * 传文件。传完**不自动发送、也不动输入框里的字**——只在输入框上方多一个缩略图。
@@ -372,7 +425,7 @@ export default function SessionScreen() {
   const runUpload = useCallback(async (
     run: (onPicking: (n: number) => void) => Promise<UploadBatch>,
   ) => {
-    if (!client || attaching) return;
+    if (!client || attaching || !canSendFor(client, draftOwner)) return;
     /**
      * **转圈不在这儿开。**
      *
@@ -418,7 +471,7 @@ export default function SessionScreen() {
       clearTimeout(relief);
       setAttaching(false);
     }
-  }, [client, attaching]);
+  }, [client, attaching, draftOwner, setAttachments]);
 
   /** 原生那条：弹卡片 → expo 选择器。 */
   const attach = useCallback((source: PickSource) => {
@@ -477,14 +530,15 @@ export default function SessionScreen() {
   const unsettled = useMemo(() => {
     const used = new Set<string>();
     return pending.filter((p) => {
-      if (p.failed) return true;
+      if (p.queueId && live.queued.some((q) => q.id === p.queueId)) return false;
+      if (!p.accepted) return true;
       const hit = live.events.find((e) => e.kind === 'text' && e.role === 'user'
         && !used.has(e.id) && !p.before?.has(e.id) && (e.text ?? '') === p.text);
       if (!hit) return true;
       used.add(hit.id);
       return false;
     });
-  }, [pending, live.events]);
+  }, [pending, live.events, live.queued]);
 
   /**
    * 别的设备（或电脑网页）发的、agent 还没写进记录的那一句。服务端的轮次带着原文（turn.prompt），
@@ -800,12 +854,16 @@ export default function SessionScreen() {
         {turnEcho !== null && <MsgUser text={turnEcho} fromPhone={false} sessionKey={key} />}
         {unsettled.map((p) => (
           <PendingMsg
+            status={p.syncPending ? trNew('session.sentSyncPending') : p.accepted ? trNew('session.accepted') : undefined}
             key={p.id}
             text={p.text}
             failed={p.failed}
             error={p.error}
-            onRetry={() => deliver(p.id, p.text)}
-            onDrop={() => setPending((prev) => prev.filter((x) => x.id !== p.id))}
+            onRetry={p.retryDisabled || allowSend !== true ? undefined : () => deliver(p.id, p.text)}
+            onDrop={() => {
+              if (draftOwner) clearMobileSend(draftOwner, key, p.id);
+              setPending((prev) => prev.filter((x) => x.id !== p.id));
+            }}
           />
         ))}
 
@@ -885,7 +943,7 @@ export default function SessionScreen() {
           {live.queued.map((q) => (
             <View key={q.id} style={s.queuedRow}>
               <Text style={s.queuedTx} numberOfLines={1}>{q.text}</Text>
-              {running || live.host === 'busy' ? (
+              {canInterrupt && (running || live.host === 'busy') ? (
                 <Tappable
                   style={s.queuedBtn}
                   onPress={() => sendNow(q)}
@@ -908,7 +966,7 @@ export default function SessionScreen() {
             </View>
           ))}
           <Text style={s.queuedWhy}>
-            {running ? '这轮结束后依次发出。点「插队」会停下这一轮，马上发那条'
+            {running ? (canInterrupt ? '这轮结束后依次发出。点「插队」可先停止本轮' : '这轮结束后依次发出')
               : live.host === 'busy' ? '等电脑上那轮跑完后依次发出'
                 : '马上就发出去'}
           </Text>
@@ -924,6 +982,7 @@ export default function SessionScreen() {
       ) : null}
 
       {attachErr ? <Text style={s.attachErr}>{attachErr}</Text> : null}
+      {stopNote ? <Text style={s.queuedWhy}>{stopNote}</Text> : null}
 
       <Composer
         above={(
@@ -946,7 +1005,7 @@ export default function SessionScreen() {
         selection={forceSel}
         onSend={send}
         hasAttachments={attachments.length > 0}
-        onStop={stop}
+        onStop={canInterrupt ? stop : undefined}
         /**
          * **网页端不弹我们那张卡片——系统自己会问。**
          *
@@ -972,7 +1031,7 @@ export default function SessionScreen() {
         // 不再传 sending：发送已经是同步的了，按钮上那个转圈没有对应的等待——
         // 「在路上」这件事现在由流里那条待发气泡说
         running={!!running}
-        disabled={allowSend === false}
+        disabled={allowSend !== true}
         /*
           发之前就把话说清楚。电脑上那轮在跑时，这条消息会排队——服务端挡着，
           绝不起第二个进程写同一份 transcript（两个 --resume 同时写会把上下文
@@ -982,13 +1041,15 @@ export default function SessionScreen() {
           那个框要人在电脑前点，拿它挡发送等于 owner 一离开电脑就发不出消息
           （2026-10-09 他当场否掉过这个行为）。
         */
-        placeholder={allowSend === false
-          ? (isEn ? 'Sending disabled' : '发送被关闭')
-          : running
-            ? (isEn ? 'Queue follow-up for next turn…' : '插一句，这轮结束后发出')
-            : live.host === 'busy'
-              ? (isEn ? 'Running on desktop — message will queue' : '电脑上这轮还在跑，发出去会排队')
-              : (isEn ? 'Message…' : '发一条')}
+        placeholder={allowSend === null
+          ? (isEn ? 'Checking identity and send access…' : '正在确认身份与发送权限…')
+          : allowSend === false
+            ? (isEn ? 'Sending disabled' : '发送被关闭')
+            : running
+              ? (isEn ? 'Queue follow-up for next turn…' : '插一句，这轮结束后发出')
+              : live.host === 'busy'
+                ? (isEn ? 'Running on desktop — message will queue' : '电脑上这轮还在跑，发出去会排队')
+                : (isEn ? 'Message…' : '发一条')}
         // owner 原话：「那个位置是一个无意义的切换看多细节 改掉」。
         // 一天里改模型的次数远多于改详略，而这颗药丸是发送前唯一一眼看得见的控件。
         // 看多细没删，退到「更多」里去了。
@@ -999,6 +1060,7 @@ export default function SessionScreen() {
             agent 这一屏不给换：会话已经建在某个 agent 上了，换不了。
           */
           <SetupPill
+            readOnlyPreferences={allowSend !== true}
             agent={live.agent ?? 'claude'}
             model={live.model}
             modelOptions={models.for(live.agent ?? 'claude')}

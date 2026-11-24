@@ -59,6 +59,14 @@ export async function registerWorker(): Promise<ServiceWorkerRegistration | null
   }
 }
 
+/** Upgrade an existing browser subscription after authentication without prompting for permission. */
+export async function rebindExistingPush(client: Client, current: () => boolean): Promise<void> {
+  if (pushState() !== 'on') return;
+  const reg = await registerWorker();
+  const sub = await reg?.pushManager?.getSubscription();
+  if (sub && current()) await client.pushSubscribe(sub.endpoint);
+}
+
 /**
  * 开启推送。**必须在用户点击的回调里调**——权限请求需要用户手势，
  * 在别处调浏览器会直接拒，而且不给任何提示，查起来极费劲。

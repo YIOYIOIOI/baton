@@ -3,37 +3,39 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { killChildTree } from './spawn.js';
+import { windowsAgyLaunch } from './codexRuntime.js';
 
-/** 查找本机 `agy` CLI 可执行文件（`AGY_BIN`、常见安装目录与 `PATH`）。 */
-export function findAgyBinary({ env = process.env } = {}) {
-  const candidates = [];
-  if (env.AGY_BIN) candidates.push(env.AGY_BIN);
-
-  const localAppData = env.LOCALAPPDATA ?? '';
-  if (process.platform === 'win32' && localAppData) {
-    candidates.push(
-      path.join(localAppData, 'agy', 'bin', 'agy.exe'),
-      path.join(localAppData, 'Programs', 'Antigravity', 'bin', 'agy.cmd'),
-      path.join(localAppData, 'Programs', 'antigravity', 'bin', 'agy.cmd'),
-    );
-  } else {
-    candidates.push('/usr/local/bin/agy', '/opt/homebrew/bin/agy');
-  }
-
-  const pathDirs = String(env.PATH ?? '').split(path.delimiter).filter(Boolean);
-  const exts = process.platform === 'win32' ? ['agy.exe', 'agy.cmd', 'agy.bat', 'agy'] : ['agy'];
-  for (const dir of pathDirs) {
-    for (const exe of exts) candidates.push(path.join(dir, exe));
-  }
-
-  for (const c of candidates) {
+function discoverAgy(env, cwd, explicit = undefined) {
+  if (explicit === null) return null;
+  if (process.platform === 'win32') return windowsAgyLaunch(env, cwd, explicit);
+  const candidates = explicit === undefined
+    ? [env.AGY_BIN, '/usr/local/bin/agy', '/opt/homebrew/bin/agy',
+      ...String(env.PATH ?? '').split(':').filter(Boolean).map((dir) => path.join(dir, 'agy'))]
+    : [explicit];
+  let workspace;
+  try { workspace = fs.realpathSync.native(cwd); } catch { return null; }
+  for (const candidate of candidates) {
+    if (!candidate) continue;
     try {
-      if (fs.statSync(c).isFile()) return c;
+      const file = fs.realpathSync.native(candidate);
+      if ((workspace !== '/' && (file === workspace || file.startsWith(workspace + '/'))) || !fs.statSync(file).isFile()) continue;
+      fs.accessSync(file, fs.constants.X_OK);
+      return { file, command: file, shell: false, env };
     } catch {
       // 不在
     }
   }
   return null;
+}
+
+/** Return the physical host executable that will be used when the child changes to its session directory. */
+export function findAgyBinary({ env = process.env, cwd = process.cwd() } = {}) {
+  return discoverAgy(env, cwd)?.file ?? null;
+}
+
+export function agyLaunch({ agyBin = undefined, env = process.env, cwd = process.cwd(), home = os.homedir() } = {}) {
+  const launch = discoverAgy(env, cwd, agyBin);
+  return launch && { ...launch, env: withAgyEnv(launch.env, { home }) };
 }
 
 /** 读取 `agy` 出站所需代理：优先环境变量，缺失时复用 `~/.claude/settings.json` 的 `env.HTTPS_PROXY`。 */
@@ -61,21 +63,17 @@ export function withAgyEnv(env = process.env, { home = os.homedir() } = {}) {
 /**
  * 执行短命 `agy` CLI 命令（如 `--print=/usage` 或 `models`），带独立超时树杀与输出上限。
  * @param {string[]} args
- * @param {{ agyBin?: string|null, env?: NodeJS.ProcessEnv, home?: string, timeoutMs?: number, maxBuffer?: number, input?: string }} [opts]
+ * @param {{ agyBin?: string|null, env?: NodeJS.ProcessEnv, home?: string, cwd?: string, timeoutMs?: number, maxBuffer?: number, input?: string }} [opts]
  */
 export function execAgy(args, {
-  agyBin = null, env = process.env, home = os.homedir(), timeoutMs = 15_000, maxBuffer = 8 * 1024 * 1024, input = '',
+  agyBin = undefined, env = process.env, home = os.homedir(), cwd = process.cwd(), timeoutMs = 15_000, maxBuffer = 8 * 1024 * 1024, input = '',
 } = {}) {
-  const bin = agyBin ?? findAgyBinary({ env });
-  if (!bin) return Promise.resolve({ code: -1, stdout: '', stderr: '未找到 agy 可执行文件' });
-
-  const useShell = process.platform === 'win32' && /\.(cmd|bat)$/i.test(bin);
-  const cmd = useShell && /\s/.test(bin) ? `"${bin}"` : bin;
+  const launch = agyLaunch({ agyBin: agyBin ?? undefined, cwd, env, home });
+  if (!launch) return Promise.resolve({ code: -1, stdout: '', stderr: '未找到 agy 可执行文件' });
 
   return new Promise((resolve) => {
-    const child = spawn(cmd, args, {
-      env: withAgyEnv(env, { home }),
-      shell: useShell,
+    const child = spawn(launch.command, args, {
+      cwd, env: launch.env, shell: launch.shell,
       windowsHide: true,
       stdio: ['pipe', 'pipe', 'pipe'],
       ...(process.platform !== 'win32' ? { detached: true } : {}),

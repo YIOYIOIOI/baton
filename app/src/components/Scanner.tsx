@@ -117,8 +117,9 @@ export function parseScanned(data: string): { code: string; origin: string | nul
 
   try {
     const u = new URL(raw);
+    if ((u.protocol !== 'http:' && u.protocol !== 'https:') || u.username || u.password) return null;
     const c = clean(u.searchParams.get('c') ?? '');
-    if (c.length === 12) return { code: c, origin: `${u.protocol}//${u.host}` };
+    if (c.length === 12) return { code: c, origin: u.origin };
   } catch {
     // 不是 URL，往下当裸码试
   }

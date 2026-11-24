@@ -1,7 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { tmpDir } from './helpers.js';
 
 /*
   测试建的临时目录，进程退出时要删掉。
@@ -22,4 +24,23 @@ test('tmpDir 建的目录和 BATON_DIR 临时家目录，进程一退就删掉',
   assert.equal(out.status, 0, out.stderr);
   const { made, home } = JSON.parse(out.stdout);
   for (const d of [...made, home]) assert.equal(fs.existsSync(d), false, `${d} 应当已经删掉`);
+});
+
+test('预加载隔离调用方已有的数据目录，不读取或清理其中的状态', () => {
+  const existing = tmpDir();
+  const marker = path.join(existing, 'push.json');
+  fs.writeFileSync(marker, '{}');
+  const setup = new URL('./setup.js', import.meta.url).href;
+  const out = spawnSync(process.execPath, ['--import', setup, '--input-type=module', '-e', `
+    import fs from 'node:fs';
+    import path from 'node:path';
+    const dir = process.env.BATON_DIR;
+    console.log(JSON.stringify({ dir, inherited: fs.existsSync(path.join(dir, 'push.json')) }));
+  `], { encoding: 'utf8', env: { ...process.env, BATON_DIR: existing } });
+  assert.equal(out.status, 0, out.stderr);
+  const { dir, inherited } = JSON.parse(out.stdout);
+  assert.notEqual(dir, existing);
+  assert.equal(inherited, false);
+  assert.equal(fs.existsSync(dir), false);
+  assert.equal(fs.readFileSync(marker, 'utf8'), '{}');
 });

@@ -1,7 +1,11 @@
 import { useCallback } from 'react';
 import { Platform } from 'react-native';
+import { File, Paths } from 'expo-file-system';
 import { create } from 'zustand';
 import type { Attachment } from '@/store/attach';
+import { draftScope, getBrowserLock, rememberBrowserScope } from './browserSession';
+import { deleteSecret, getSecret, setSecret } from './secure';
+import { clearMobileSends, markMobileDraftConsumed, type MobileSend } from './mobilePending';
 
 /**
  * 没发出去的草稿，按会话存。
@@ -20,21 +24,28 @@ import type { Attachment } from '@/store/attach';
 /** 新建会话那一屏的草稿。会话 key 形如 `claude:…`，撞不上它。 */
 export const NEW_SESSION_DRAFT = 'new';
 
-const WEB = Platform.OS === 'web';
-/** 网页端和 web/src/drafts.ts 用同一个键、同一种格式：同一个浏览器里两套界面看到同一份草稿。 */
-const STORE_KEY = 'baton.drafts';
-const FILE_NAME = 'baton-drafts.json';
+const web = () => Platform.OS === 'web';
+let scope: string | null = null;
+let generation = 0;
+let storageQueue: Promise<void> = Promise.resolve();
+const dirty = new Set<string>();
+let persistedText: Record<string, string> = {};
 /** 选择器要返回稳定的引用，每次给一个新 [] 会让订阅它的组件无限重画。 */
 const EMPTY: Attachment[] = [];
 
 type Drafts = {
+  scope: string | null;
   text: Record<string, string>;
   attachments: Record<string, Attachment[]>;
 };
 
-const useDrafts = create<Drafts>(() => ({ text: {}, attachments: {} }));
+const useDrafts = create<Drafts>(() => ({ scope: null, text: {}, attachments: {} }));
+
+export const useDraftScope = () => useDrafts((state) => state.scope);
 
 export function setDraftText(key: string, value: string) {
+  if (!scope || (web() && getBrowserLock())) return;
+  dirty.add(key);
   useDrafts.setState((s) => {
     const text = { ...s.text };
     // 清空就删掉这一项，别让盘上攒一堆空字符串
@@ -48,6 +59,7 @@ export function setDraftText(key: string, value: string) {
 type Next = Attachment[] | ((prev: Attachment[]) => Attachment[]);
 
 export function setDraftAttachments(key: string, next: Next) {
+  if (!scope) return;
   useDrafts.setState((s) => {
     const value = typeof next === 'function' ? next(s.attachments[key] ?? EMPTY) : next;
     const attachments = { ...s.attachments };
@@ -68,15 +80,17 @@ export function draftAttachments(key: string): Attachment[] {
 
 /** 这个会话的草稿文字。用法同 useState。 */
 export function useDraft(key: string) {
+  const owner = useDrafts((s) => s.scope);
   const value = useDrafts((s) => s.text[key] ?? '');
-  const set = useCallback((v: string) => setDraftText(key, v), [key]);
+  const set = useCallback((v: string) => { if (scope === owner) setDraftText(key, v); }, [key, owner]);
   return [value, set] as const;
 }
 
 /** 这个会话挂着、等随下一条发出的附件。用法同 useState（也收函数）。 */
 export function useDraftAttachments(key: string) {
+  const owner = useDrafts((s) => s.scope);
   const value = useDrafts((s) => s.attachments[key] ?? EMPTY);
-  const set = useCallback((next: Next) => setDraftAttachments(key, next), [key]);
+  const set = useCallback((next: Next) => { if (scope === owner) setDraftAttachments(key, next); }, [key, owner]);
   return [value, set] as const;
 }
 
@@ -86,44 +100,120 @@ let timer: ReturnType<typeof setTimeout> | null = null;
 
 function scheduleSave() {
   if (timer) clearTimeout(timer);
-  // 攒一下再写：每敲一个字写一次盘没有意义
-  timer = setTimeout(() => {
-    timer = null;
-    void save(useDrafts.getState().text);
-  }, 400);
+  timer = setTimeout(flush, 400);
 }
 
-async function save(text: Record<string, string>) {
-  const json = JSON.stringify(text);
+function readText(target: string): Record<string, string> {
+  let data: string | null = null;
+  if (web()) data = localStorage.getItem(target);
+  else {
+    const file = new File(Paths.document, target + '.json');
+    if (file.exists) data = file.textSync();
+  }
+  return JSON.parse(data ?? '{}');
+}
+
+function writeText(target: string, value: Record<string, string>) {
+  const json = JSON.stringify(value);
+  if (web()) localStorage.setItem(target, json);
+  else {
+    const file = new File(Paths.document, target + '.json');
+    if (!file.exists) file.create();
+    file.write(json);
+  }
+  if (target === scope) persistedText = value;
+}
+
+/** Clear only this operation's source text. The POST must wait for both durable writes. */
+export function commitSubmittedDraft(entry: MobileSend, original: string, fromComposer = false) {
+  if (scope !== entry.scope || (web() && getBrowserLock())) throw new Error('send_storage');
+  if (entry.draftConsumed && !fromComposer) return;
+  const key = entry.session;
+  const current = draftText(key);
+  const matches = (value: string | undefined) => entry.sourceDraft !== undefined ? value === original : value?.trim() === original.trim();
+  const stored = readText(entry.scope);
+  if (current && !matches(current)) stored[key] = current;
+  else if (matches(stored[key]) || (matches(current) && stored[key] === persistedText[key])) delete stored[key];
+  writeText(entry.scope, stored);
+  markMobileDraftConsumed(entry);
+  if (matches(current)) useDrafts.setState((s) => {
+    const text = { ...s.text }; delete text[key]; return { text };
+  });
+  dirty.delete(key);
+}
+
+/** Preserve newer input before retiring a confirmed operation, even inside its debounce interval. */
+export function persistNextDraft(owner: string, key: string) {
+  if (scope !== owner || (web() && getBrowserLock())) throw new Error('send_storage');
+  if (!dirty.has(key)) return;
+  const stored = readText(owner);
+  const next = draftText(key);
+  if (next) stored[key] = next; else delete stored[key];
+  writeText(owner, stored);
+  dirty.delete(key);
+}
+
+function flush() {
+  if (timer) clearTimeout(timer);
+  timer = null;
+  if (!scope) return;
+  if (web() && getBrowserLock()) return;
+  if (!dirty.size) return;
   try {
-    if (WEB) {
-      globalThis.localStorage?.setItem(STORE_KEY, json);
-      return;
+    const stored = readText(scope);
+    for (const key of dirty) { const text = draftText(key); if (text) stored[key] = text; else delete stored[key]; }
+    writeText(scope, stored);
+    dirty.clear();
+  } catch { /* Keep dirty input in memory; a send requires its own successful write. */ }
+}
+
+export async function selectDraftIdentity(origin: string, principal: string, assigned?: string) {
+  const next = draftScope(origin, principal, assigned);
+  if (scope === next) return;
+  if (timer) flush();
+  dirty.clear();
+  persistedText = {};
+  const revision = ++generation;
+  scope = next;
+  useDrafts.setState({ scope, text: {}, attachments: {} });
+  try {
+    if (web()) {
+      rememberBrowserScope(next);
+    } else {
+      storageQueue = storageQueue.then(() => setSecret('baton.drafts.active', next)).catch(() => {});
+      const legacy = new File(Paths.document, 'baton-drafts.json');
+      if (legacy.exists) legacy.delete();
     }
-    const { File, Paths } = await import('expo-file-system');
-    const f = new File(Paths.document, FILE_NAME);
-    if (!f.exists) f.create();
-    f.write(json);
-  } catch {
-    // 存不上的代价只是「杀掉重开之后草稿没了」，不能因此打断打字
-  }
+    if (revision !== generation) return;
+    const parsed = readText(next);
+    persistedText = parsed;
+    const saved = Object.fromEntries(Object.entries(parsed).filter(([, value]) => typeof value === 'string')) as Record<string, string>;
+    useDrafts.setState((s) => ({ text: { ...saved, ...s.text } }));
+  } catch { /* Keep the in-memory draft if storage is unavailable. */ }
 }
 
-async function load(): Promise<Record<string, unknown>> {
-  try {
-    if (WEB) return JSON.parse(globalThis.localStorage?.getItem(STORE_KEY) ?? '{}');
-    const { File, Paths } = await import('expo-file-system');
-    const f = new File(Paths.document, FILE_NAME);
-    return f.exists ? JSON.parse(await f.text()) : {};
-  } catch {
-    return {}; // 读不出来就当没有，多半是隐私模式或文件坏了
+export function resetDraftIdentity(remove = false) {
+  const previous = scope;
+  if (timer && !remove) flush();
+  if (timer) clearTimeout(timer);
+  timer = null;
+  dirty.clear();
+  persistedText = {};
+  ++generation;
+  scope = null;
+  useDrafts.setState({ scope: null, text: {}, attachments: {} });
+  if (!remove) return storageQueue;
+  if (web()) {
+    try { if (previous) { localStorage.removeItem(previous); clearMobileSends(previous); } } catch { /* The in-memory copy has been cleared. */ }
+  } else {
+    storageQueue = storageQueue.then(async () => {
+      const target = previous ?? await getSecret('baton.drafts.active');
+      if (!target?.startsWith('baton.drafts.v2.')) return;
+      clearMobileSends(target);
+      const file = new File(Paths.document, target + '.json');
+      if (file.exists) file.delete();
+      await deleteSecret('baton.drafts.active');
+    }).catch(() => {});
   }
+  return storageQueue;
 }
-
-// 启动时读回来。**只补内存里还空着的**：读盘是异步的，这期间已经打了字的
-// 那一份更新，不能被盘上旧的盖掉。
-void load().then((saved) => {
-  const add: Record<string, string> = {};
-  for (const [k, v] of Object.entries(saved ?? {})) if (typeof v === 'string' && v) add[k] = v;
-  if (Object.keys(add).length) useDrafts.setState((s) => ({ text: { ...add, ...s.text } }));
-});

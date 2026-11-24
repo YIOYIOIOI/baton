@@ -2,12 +2,15 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import {
-  ensureKeys, publicKey, vapidJwt, subscribe, unsubscribe, listSubscriptions, notify,
+  ensureKeys, publicKey, vapidJwt, subscribe as registerSubscription, unsubscribe, listSubscriptions, notify,
   setLatest, getLatest,
 } from '../src/push.js';
 import { pushUnsubscribeHandler } from '../src/http/handlers/push.js';
 import { buildRoutes } from '../src/http/routes.js';
 import { createAuth } from '../src/http/auth.js';
+
+const deviceFor = (id) => id === 'owner' ? 'owner-test-dev01' : 'guest-test-dev01';
+const subscribe = (sub, id = 'owner') => registerSubscription(sub, id, deviceFor(id));
 
 /**
  * Web Push 的坑集中在两处：JWT 的签名编码，和订阅的生命周期。
@@ -140,7 +143,7 @@ test('推送按身份分区——访客收不到 owner 的会话标题', async (
   assert.deepEqual(hit, ['https://push.example/friend']);
 });
 
-test('没有 principalId 的旧订阅视为 owner', () => {
+test('owner 的配对设备订阅记录归属 owner', () => {
   for (const s of listSubscriptions()) unsubscribe(s.endpoint);
   subscribe({ endpoint: 'https://push.example/legacy' });
   assert.equal(listSubscriptions()[0].principalId, 'owner');
@@ -188,15 +191,15 @@ test('访客不能劫持或退订 owner 的推送订阅', async () => {
   assert.equal(listSubscriptions().find((s) => s.endpoint === sharedEp)?.principalId, 'owner');
 
   // 访客直接调 handler 或经路由退订同一个 endpoint，不能删掉 owner 的
-  pushUnsubscribeHandler({ endpoint: sharedEp }, 'friend');
+  pushUnsubscribeHandler({ endpoint: sharedEp }, { id: 'friend' }, deviceFor('friend'));
   assert.equal(listSubscriptions().length, 1, '直接调 pushUnsubscribeHandler 也不能跨身份删除');
 
   const auth = createAuth({ token: 'p'.repeat(64) });
   const unsubRoute = buildRoutes({ auth }).find((r) => r.name === 'pushUnsubscribeHandler');
-  await unsubRoute.run({ body: { endpoint: sharedEp }, principal: { id: 'friend' } });
+  await unsubRoute.run({ body: { endpoint: sharedEp }, principal: { id: 'friend' }, deviceId: deviceFor('friend') });
   assert.equal(listSubscriptions().length, 1, '路由未传入 principal.id 会让访客退订 owner');
 
   // owner 自己退订才删得掉
-  await unsubRoute.run({ body: { endpoint: sharedEp }, principal: { id: 'owner' } });
+  await unsubRoute.run({ body: { endpoint: sharedEp }, principal: { id: 'owner' }, deviceId: deviceFor('owner') });
   assert.equal(listSubscriptions().length, 0);
 });

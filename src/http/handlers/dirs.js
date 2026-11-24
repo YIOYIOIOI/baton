@@ -4,7 +4,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { inScope } from '../../scope.js';
+import { scopedPath } from '../../scope.js';
 import { listDirs, listDrives } from '../../dirs.js';
 import { errorBody } from '../errors.js';
 import { visibleCwds } from './sessions.js';
@@ -44,14 +44,14 @@ export function browseDirs({ repo, principal, path: target }) {
     };
   }
 
-  const resolved = path.resolve(target);
-  if (!inScope(resolved, roots)) {
+  const resolved = scopedPath(target, principal);
+  if (!resolved) {
     // 这里用 403 而不是 404：路径是调用者自己敲的，告诉他边界在哪更可操作，
     // 且不泄露任何存在性信息——他本来就知道自己传了什么。
     // 会话 key 那条路径相反，用 404，因为 key 不是他敲的。
     return {
       status: 403,
-      body: errorBody('outside_workspace', `${resolved} 不在你的工作区里。`,
+      body: errorBody('outside_workspace', `${target} 不在你的工作区里。`,
         `你的工作区是 ${roots.join('、')}，只能浏览它下面的目录。`),
     };
   }
@@ -77,7 +77,7 @@ export function browseDirs({ repo, principal, path: target }) {
   // parent 为 null 表示「不能再往上」：guest 站在自己 root 上时如此，
   // owner 站在盘符根上时也如此（path.dirname('C:\\') === 'C:\\'）。
   const up = path.dirname(resolved);
-  const parent = (up === resolved || !inScope(up, roots)) ? null : up;
+  const parent = up === resolved ? null : scopedPath(up, principal);
   return { status: 200, body: { path: resolved, parent, dirs } };
 }
 
@@ -103,11 +103,11 @@ export function makeDir({
         '传完整路径，例如 C:\\BatonWorkspaces\\friend\\newproj。'),
     };
   }
-  const resolved = path.resolve(target);
-  if (!inScope(resolved, principal?.roots ?? null)) {
+  const resolved = scopedPath(target, principal);
+  if (!resolved) {
     return {
       status: 403,
-      body: errorBody('outside_workspace', `${resolved} 不在你的工作区里。`,
+      body: errorBody('outside_workspace', `${target} 不在你的工作区里。`,
         `你的工作区是 ${principal.roots.join('、')}，只能在它下面新建目录。`),
     };
   }

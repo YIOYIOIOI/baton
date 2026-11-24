@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import { pageEvents } from '../../paginate.js';
 import { createFollower } from '../../follow.js';
 import { eventsForFull } from '../../wire.js';
-import { readRangeWithOffsets, parseLines } from '../../jsonl.js';
+import { previousLineEnd, readLineAt, parseLines } from '../../jsonl.js';
 import { createSseStream } from '../sse.js';
 import { getModel, getEffort } from '../../runtime/prefs.js';
 import { listTurns, latestTurn, runningKeys } from '../../runtime/turns.js';
@@ -20,6 +20,12 @@ import { errorBody } from '../errors.js';
 function publicMember(m) {
   const { file, ...rest } = m;
   return rest;
+}
+
+function publicTurn(turn) {
+  if (!turn) return null;
+  const { request, ownerId, ownerPid, childPid, childStarted, childGroup, monitor, principalId, principalGeneration, ...visible } = turn;
+  return visible;
 }
 
 export function listSessions(repo, { running = runningKeys(), principal = null, live = liveStates() } = {}) {
@@ -62,7 +68,7 @@ export function listSessions(repo, { running = runningKeys(), principal = null, 
   };
 }
 
-export function getEvents(repo, key, { before, limit }) {
+export async function getEvents(repo, key, { before, limit }) {
   const member = repo.getSession(key);
   if (!member) {
     return {
@@ -82,7 +88,7 @@ export function getEvents(repo, key, { before, limit }) {
         '把上一页返回的 before 原样传回来；不带它就是从最新的开始。'),
     };
   }
-  const page = pageEvents(member, {
+  const page = await pageEvents(member, {
     before: given ? at : null,
     limit: Math.min(Math.max(Math.trunc(Number(limit)) || 50, 1), 200),
   });
@@ -141,15 +147,12 @@ export function getEventFull(repo, key, eventId, { offset, from, to } = {}) {
   }
 
   // 只读这一行：从 offset 起到下一个换行。给一个宽裕的上界兜住超长行。
-  const { entries } = readRangeWithOffsets(
-    member.file, at, Math.min(size, at + 64 * 1024 * 1024), { trimPartialFirstLine: false },
-  );
-  const first = entries[0];
-  if (!first) {
+  const line = readLineAt(member.file, at, 64 * 1024 * 1024);
+  if (!line) {
     return { status: 404, body: errorBody('event_not_found', '该偏移处没有可解析的记录。', '重新拉一页事件再试。') };
   }
 
-  const ev = eventsForFull(member, parseLines([first.line])).find((e) => e.id === eventId);
+  const ev = eventsForFull(member, parseLines([line])).find((e) => e.id === eventId);
   if (!ev) {
     return {
       status: 404,
@@ -285,6 +288,8 @@ export function streamSession(repo, key, res, {
         turnId: current?.turnId ?? null,
         running,
         elapsedMs: running ? now() - current.startedAt : 0,
+        ...(running && current.canStop === false ? { canStop: false } : {}),
+        ...(running && current.stopReason ? { stopping: true } : {}),
         // 队列没有自己的事件通道，而它是运行态的一部分：不捎上的话，
         // 「在另一台设备上排了一条」这边永远看不见，而「电脑上也能看到手机上
         // 新建的活」正是本项目的目标之一。搭已有的心跳走，零额外请求，
@@ -320,21 +325,24 @@ export function streamSession(repo, key, res, {
   } catch {
     size = 0;
   }
-  const at = resumeOffset({ header: resume?.header ?? null, query: resume?.query ?? null, size });
-
-  follower = createFollower(member, (events) => {
-    // 最后一条的结束位置 = 下次的接续点。事件自带 offset（见 wire.js）
-    const last = events[events.length - 1];
-    sse.send('events', { events }, last?.offset === undefined ? null : follower.offset);
-  }, { fromOffset: at.from, alignFirstRead: at.clamped });
-
-  /*
-    夹过就说一声。客户端据此知道「中间还有一段没补回来」，可以提示人往上滚——
-    闷着补一半、装作补全了，比少补更糟。
-  */
-  if (at.clamped) sse.send('gap', { from: at.from, droppedBefore: at.from });
-
-  follower.start();
+  const resumeRequest = { header: resume?.header ?? null, query: resume?.query ?? null };
+  function follow(at) {
+    if (released || sse.closed) return;
+    follower = createFollower(member, (events) => {
+      const last = events[events.length - 1];
+      sse.send('events', { events }, last?.offset === undefined ? null : follower.offset);
+    }, { fromOffset: at.from, alignFirstRead: at.clamped });
+    if (at.clamped) sse.send('gap', { from: at.from, droppedBefore: at.from });
+    follower.start();
+  }
+  const at = resumeOffset({ ...resumeRequest, size });
+  if (at.clamped) {
+    // The byte budget counts complete records. A long unfinished record cannot be recovered from history.
+    const requested = Number(resumeRequest.header || resumeRequest.query);
+    void previousLineEnd(member.file, size, requested + MAX_REPLAY_BYTES, () => released)
+      .then((end) => follow(resumeOffset({ ...resumeRequest, size: end })),
+        () => follow({ from: null, clamped: false }));
+  } else follow(at);
 
   // 运行轴只认这一路，不从 transcript 推——Claude 的 transcript 里压根没有终态记录。
   //
@@ -342,13 +350,19 @@ export function streamSession(repo, key, res, {
   // **不能更新 `current`**：那是秒表和运行轴的锚，被一张问题卡覆盖掉的话，
   // 心跳里的 turnId 与 elapsedMs 会当场错乱。
   unsubscribe = subscribeTurns(key, ({ type, turn }) => {
-    if (type === 'turn_start' || type === 'turn_end') current = turn;
-    sse.send(type, turn);
+    if (type === 'turn_start' || type === 'turn_end' || type === 'turn_control') {
+      current = turn;
+      sse.send(type, publicTurn(turn));
+      if (type === 'turn_end' && runningKeys().has(key)) {
+        current = latestTurn(key);
+        if (current?.status === 'running') sse.send('turn_start', publicTurn(current));
+      }
+    } else sse.send(type, turn);
   });
 
   // 建流即补一帧当前轮次：手机断连是常态，重连后不能等到下一次状态变化
   // 才知道现在在跑什么——那期间秒表和运行轴都是空的。
-  if (current) sse.send(current.status === 'running' ? 'turn_start' : 'turn_end', current);
+  if (current) sse.send(current.status === 'running' ? 'turn_start' : 'turn_end', publicTurn(current));
   // 同理补一帧待答问题。断线期间 agent 正好问了一句的话，重连后这张卡必须自己回来
   const waiting = pendingAsk(key);
   if (waiting) sse.send('ask', waiting);
@@ -357,7 +371,7 @@ export function streamSession(repo, key, res, {
     releaseStream();
     unsubRevoke();
     unsubscribe();
-    follower.stop();
+    follower?.stop();
     sse.close();
   });
   return null; // 响应已被 SSE 接管
@@ -385,7 +399,8 @@ export function sessionState({
   if (!member) {
     return { status: 404, body: errorBody('unknown_session', `找不到会话 ${key}。`, '返回列表刷新一次。') };
   }
-  const latestTurn = turns(key).at(-1) ?? null;
+  const records = turns(key);
+  const latestTurn = publicTurn(records.findLast((turn) => turn.status === 'running') ?? records.at(-1));
   // 排队中的消息也是运行态的一部分。不透出来，用户就会以为自己那条发丢了，
   // 然后再发一条——于是排了两条一样的。
   const queued = queue(key).map((i) => ({ id: i.id, text: i.text, queuedAt: i.queuedAt }));

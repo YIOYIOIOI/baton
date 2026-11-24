@@ -6,8 +6,8 @@ import { verifyRepoClean } from './verify-oss-clean.mjs';
 
 const REPO_ROOT = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
 
-function git(args, cwd = REPO_ROOT) {
-  return execFileSync('git', args, { cwd, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 }).trim();
+function git(args, cwd = REPO_ROOT, input = undefined) {
+  return execFileSync('git', args, { cwd, input, stdio: ['pipe', 'pipe', 'pipe'], encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 }).trim();
 }
 
 export function parsePublishArgs(argv) {
@@ -34,38 +34,58 @@ export function parsePublishArgs(argv) {
   return { help: false, prepare, dryRun, push, remote, targetBranch, orphanRef, message };
 }
 
+export function updateReleaseRefs(cwd, branchRef, managedRef, commitSha, expected) {
+  git(['update-ref', '--no-deref', '--stdin'], cwd,
+    `update ${branchRef} ${commitSha} ${expected}\nupdate ${managedRef} ${commitSha} ${expected}\n`);
+}
+
 export function prepareOrphanRelease({
   cwd = REPO_ROOT,
   orphanRef = 'oss-release',
   message = 'feat: initial open-source release of Baton v0.2.0',
   dryRun = false,
 } = {}) {
-  if (!/^[A-Za-z0-9._/-]+$/.test(orphanRef)) {
+  if (!/^[A-Za-z0-9_][A-Za-z0-9._/-]*$/.test(orphanRef)) {
     throw new Error(`Invalid orphan branch name: ${orphanRef}`);
   }
+  const branchRef = `refs/heads/${orphanRef}`;
+  const managedRef = `refs/baton/oss-release/${orphanRef}`;
+  git(['check-ref-format', '--branch', orphanRef], cwd);
+  const refs = new Map(git(['for-each-ref', '--format=%(refname) %(objectname) %(symref)', branchRef, managedRef], cwd)
+    .split('\n').filter(Boolean).map((line) => {
+      const [name, sha, symbolic] = line.split(' ');
+      if (symbolic) throw new Error(`Refusing to replace symbolic ref ${name}`);
+      return [name, sha];
+    }));
+  const previous = refs.get(branchRef);
+  if (previous !== refs.get(managedRef)) {
+    throw new Error(`Refusing to replace unmanaged or independently changed branch ${orphanRef}`);
+  }
+  function assertNotCheckedOut() {
+    if (git(['worktree', 'list', '--porcelain', '-z'], cwd).split('\0').includes(`branch ${branchRef}`)) {
+      throw new Error(`Refusing to replace checked-out branch ${orphanRef}`);
+    }
+  }
+  assertNotCheckedOut();
   const status = git(['status', '--porcelain'], cwd);
   if (status) {
     throw new Error(`Working tree is not clean. Commit or clean changes first:\n${status}`);
   }
-  const clean = verifyRepoClean({ cwd });
+  const treeSha = git(['rev-parse', 'HEAD^{tree}'], cwd);
+  const currentBranch = git(['branch', '--show-current'], cwd);
+  const commitSha = dryRun ? null : git(['commit-tree', treeSha, '-m', message], cwd);
+  const clean = verifyRepoClean({ cwd, ref: commitSha ?? treeSha, orphan: !dryRun });
   if (!clean.ok) {
     throw new Error(`OSS sanitization gate failed:\n${clean.errors.join('\n')}`);
   }
-
-  const treeSha = git(['rev-parse', 'HEAD^{tree}'], cwd);
-  const currentBranch = git(['branch', '--show-current'], cwd);
   if (dryRun) {
     return { dryRun: true, currentBranch, orphanRef, treeSha, commitSha: null, checkedFiles: clean.checkedFiles };
   }
 
-  // Construct an isolated single-commit root tree without touching HEAD or checkout state.
-  const commitSha = git(['commit-tree', treeSha, '-m', message], cwd);
-  git(['update-ref', `refs/heads/${orphanRef}`, commitSha], cwd);
-
-  const orphanCheck = verifyRepoClean({ cwd, ref: orphanRef, orphan: true });
-  if (!orphanCheck.ok) {
-    throw new Error(`Created orphan ref ${orphanRef} failed verification:\n${orphanCheck.errors.join('\n')}`);
-  }
+  assertNotCheckedOut();
+  // The marker records the last value we published. Both refs advance or neither does.
+  const expected = previous ?? '0'.repeat(treeSha.length);
+  updateReleaseRefs(cwd, branchRef, managedRef, commitSha, expected);
 
   return {
     dryRun: false,
@@ -73,7 +93,7 @@ export function prepareOrphanRelease({
     orphanRef,
     treeSha,
     commitSha,
-    checkedFiles: orphanCheck.checkedFiles,
+    checkedFiles: clean.checkedFiles,
   };
 }
 
@@ -94,6 +114,7 @@ function main() {
   if (opts.push && !opts.remote) {
     throw new Error('--push requires --remote <url-or-remote-name>.');
   }
+  if (opts.remote) git(['check-ref-format', `refs/heads/${opts.targetBranch}`]);
 
   const res = prepareOrphanRelease({
     orphanRef: opts.orphanRef,
@@ -110,10 +131,10 @@ function main() {
   console.log(`Current workspace branch remains '${res.currentBranch}'.`);
 
   if (opts.push) {
-    git(['push', opts.remote, `refs/heads/${res.orphanRef}:refs/heads/${opts.targetBranch}`]);
+    git(['push', '--', opts.remote, `${res.commitSha}:refs/heads/${opts.targetBranch}`]);
     console.log(`Pushed ${res.orphanRef} -> ${opts.remote} (${opts.targetBranch}).`);
   } else if (opts.remote) {
-    console.log(`Dry instructions (pass --push to execute):\n  git push ${opts.remote} ${res.orphanRef}:${opts.targetBranch}`);
+    console.log(`Prepared push to ${opts.remote}: ${res.commitSha}:refs/heads/${opts.targetBranch} (pass --push to execute).`);
   }
 }
 

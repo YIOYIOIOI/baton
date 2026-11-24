@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useState, useRef} from 'react';
+import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useState, useRef } from 'react';
 import { ApiError, api, type Agent, type Cut, type Ev, type PendingAsk, type Tick } from './api';
 import { AskCard } from './Ask';
 import { Link } from './router';
@@ -18,7 +18,10 @@ import { attachmentSuffix, splitAttachments, isImageName, type Attachment } from
 import { SessionConfig } from './SessionConfig';
 import { pastedName, useFileDrop } from './useFileDrop';
 import { useStickToBottom } from './useStickToBottom';
-import { loadDraft, saveDraft } from './drafts';
+import { clearPendingSend, DraftScope, readPendingSend, savePendingSend, useDraft, type PendingSend } from './drafts';
+import { historyAfter } from '../../app/src/api/eventHistory';
+import { sendIntent } from './sendIntent';
+import { canRetrySend } from '../../app/src/api/sendWindow';
 import {
   asText, displayName, shapeInput, shapeOutput, type Section,
 } from './tools';
@@ -778,10 +781,12 @@ function mergeLatest(cached: Ev[], page: Ev[]): Ev[] | null {
 /* ── 主体 ─────────────────────────────────────────────────────────────────── */
 
 export function Conversation({ sessionKey }: { sessionKey: string }) {
-  const { locale } = useI18n();
+  const { locale, t } = useI18n();
   const isEn = locale === 'en';
   // 只在挂载那一刻看一次缓存：之后的状态归这个实例自己管
-  const [hit] = useState(() => CACHE.get(sessionKey) ?? null);
+  const scope = useContext(DraftScope);
+  const cacheKey = scope ? JSON.stringify([scope, sessionKey]) : null;
+  const [hit] = useState(() => cacheKey ? CACHE.get(cacheKey) ?? null : null);
   const [events, setEvents] = useState<Ev[]>(hit?.events ?? []);
   const [before, setBefore] = useState<number | null>(hit?.before ?? null);
   const [loadingOlder, setLoadingOlder] = useState(false);
@@ -789,16 +794,24 @@ export function Conversation({ sessionKey }: { sessionKey: string }) {
   const [olderErr, setOlderErr] = useState(false);
   const [err, setErr] = useState<ApiError | null>(null);
   const [ready, setReady] = useState(!!hit);
+  const [streamFrom, setStreamFrom] = useState<{ offset: number } | null>(null);
   // `at`：收到这一帧的本地时刻。状态栏的秒表从它往前走（见 TurnBar）
   const [tick, setTick] = useState<(Tick & { at: number }) | null>(hit?.tick ?? null);
   // 草稿按会话存在这个组件之外：切会话会整个重挂载它，存在这里就丢了（见 drafts.ts）
-  const [draft, setDraftState] = useState(() => loadDraft(sessionKey));
-  const setDraft = useCallback((v: string) => {
-    setDraftState(v);
-    saveDraft(sessionKey, v);
-  }, [sessionKey]);
-  const [sendErr, setSendErr] = useState<ApiError | null>(null);
+  const [recovered] = useState(() => readPendingSend(scope, sessionKey));
+  const [draft, saveDraft] = useDraft(sessionKey, recovered?.draft);
+  const draftValue = useRef(draft);
+  const setDraft = useCallback((text: string) => { draftValue.current = text; saveDraft(text); }, [saveDraft]);
+  const expiredSend = () => new ApiError(0, 'send_window_expired', t('conv.expiredSend'), t('conv.expiredSendHelp'));
+  const [sendErr, setSendErr] = useState<ApiError | null>(() => {
+    if (!recovered || draft !== recovered.draft) return null;
+    if (!canRetrySend(recovered.startedAt)) return expiredSend();
+    return new ApiError(0, 'send_unconfirmed', t('conv.sendUnconfirmed'), t(recovered.fork ? 'conv.retryFork' : recovered.when === 'interrupt' ? 'conv.retryInterrupt' : 'conv.retryUnconfirmed'));
+  });
+  const [stopReply, setStopReply] = useState<{ turnId: string; note: string; stopping?: boolean } | null>(null);
   const [sending, setSending] = useState(false);
+  const delivery = useRef<PendingSend | null>(recovered);
+  const submitting = useRef(false);
   const [uploading, setUploading] = useState(0);
   /**
    * 已经传上去、等着随下一条消息发出的附件。
@@ -806,7 +819,7 @@ export function Conversation({ sessionKey }: { sessionKey: string }) {
    * 和手机端同一个模型：传完挂在输入框上方，路径在**发送那一刻**才拼到正文
    * 末尾。撤掉只是「不带上」——文件已经在那台电脑的 .baton-uploads/ 里了。
    */
-  const [atts, setAtts] = useState<Attachment[]>([]);
+  const [atts, setAtts] = useState<Attachment[]>(() => recovered && draft === recovered.draft ? recovered.attachments : []);
   /** 文件浏览器开着没有。每次打开都从工作目录根重新拉，见 FileBrowser。 */
   const [files, setFiles] = useState(false);
   /**
@@ -843,7 +856,7 @@ export function Conversation({ sessionKey }: { sessionKey: string }) {
   // agent 正在等回答的那道选择题。挂着的时候那一轮是停住的，不是在跑
   const [ask, setAsk] = useState<PendingAsk | null>(hit?.ask ?? null);
   /** 最近一轮没跑成：原因，以及（如果是这个页面发的）那条消息的原文 */
-  const [failed, setFailed] = useState<{ turnId: string; error: string; text: string | null; handoff?: boolean } | null>(null);
+  const [failed, setFailed] = useState<{ turnId: string; error: string; text: string | null; handoff?: boolean; unconfirmed?: boolean } | null>(null);
   const sentTurns = useRef(new Map<string, string>());
   /** 按下发送那一刻摆出来的那条，在服务端回话前用的临时编号 */
   const localSeq = useRef(0);
@@ -891,33 +904,44 @@ export function Conversation({ sessionKey }: { sessionKey: string }) {
   const lastScroll = useRef({ top: hit?.scrollTop ?? 0, atBottom: hit?.atBottom ?? true });
   useEffect(() => () => {
     const v = live.current;
-    if (v.events.length) remember(sessionKey, { ...v, scrollTop: lastScroll.current.top, atBottom: lastScroll.current.atBottom });
-  }, [sessionKey]);
+    if (cacheKey && v.events.length) remember(cacheKey, { ...v, scrollTop: lastScroll.current.top, atBottom: lastScroll.current.atBottom });
+  }, [cacheKey]);
 
   useEffect(() => {
     let alive = true;
-    api
+    let retry: ReturnType<typeof setTimeout> | undefined;
+    let delay = 1000;
+    const load = () => api
       .events(sessionKey, { limit: 60 })
       .then((page) => {
         if (!alive) return;
         // 有缓存：接上；接不上（中间有缺口）就整段换成这一页
-        const merged = hit ? mergeLatest(live.current.events, page.events) : null;
+        const fresh = [...new Map(page.events.map((event) => [event.id, event])).values()];
+        const merged = hit ? mergeLatest(live.current.events, fresh) : null;
         if (merged) {
           setEvents(merged);
         } else {
-          setEvents(page.events);
+          setEvents(fresh);
           setBefore(page.nextBefore);
         }
         setReady(true);
+        setErr(null);
+        setStreamFrom({ offset: page.endOffset ?? fresh[fresh.length - 1]?.offset ?? 0 });
       })
       .catch((e: ApiError) => {
         if (!alive) return;
         if (e.status === 401) window.location.href = '/pair';
-        else setErr(e);
+        else {
+          setErr(e);
+          retry = setTimeout(load, delay);
+          delay = Math.min(delay * 2, 30_000);
+        }
         setReady(true);
       });
+    void load();
     return () => {
       alive = false;
+      clearTimeout(retry);
     };
   }, [sessionKey, hit]);
 
@@ -937,27 +961,55 @@ export function Conversation({ sessionKey }: { sessionKey: string }) {
   }, [ready, sessionKey, scrollToBottom, restoreTo]);
 
   useEffect(() => {
-    const es = api.stream(sessionKey);
+    if (streamFrom === null) return;
+    let cursor = streamFrom.offset;
+    let active = true;
+    let retry: ReturnType<typeof setTimeout> | undefined;
+    const es = api.stream(sessionKey, cursor);
 
-    es.addEventListener('events', (e) => {
-      const data = JSON.parse((e as MessageEvent).data) as { events: Ev[] };
+    const append = (events: Ev[]) => {
       setEvents((prev) => {
         // 按 id 去重：重连时服务端会把最近一段再推一遍
         const seen = new Set(prev.map((x) => x.id));
-        const add = data.events.filter((x) => !seen.has(x.id));
+        const add = events.filter((x) => {
+          if (seen.has(x.id)) return false;
+          seen.add(x.id);
+          return true;
+        });
         return add.length ? [...prev, ...add] : prev;
       });
+    };
+    es.addEventListener('events', (e) => {
+      const frame = e as MessageEvent;
+      append((JSON.parse(frame.data) as { events: Ev[] }).events);
+      const offset = Number(frame.lastEventId);
+      if (Number.isSafeInteger(offset) && offset > cursor) cursor = offset;
+    });
+    es.addEventListener('gap', () => {
+      es.close();
+      const recover = async () => {
+        try {
+          const page = await historyAfter(cursor, (before) => api.events(sessionKey, { before, limit: 200 }), () => active);
+          if (!active) return;
+          append(page.events);
+          setErr(null);
+          setStreamFrom({ offset: page.endOffset });
+        } catch (e) {
+          if (active) { setErr(e as ApiError); retry = setTimeout(recover, 2000); }
+        }
+      };
+      void recover();
     });
 
     es.addEventListener('tick', (e) => setTick({ ...(JSON.parse((e as MessageEvent).data) as Tick), at: Date.now() }));
     const onTurn = (e: Event) => {
       const t = JSON.parse((e as MessageEvent).data) as {
         turnId: string; status: string; startedAt: number; endedAt?: number | null; error?: string | null;
-        prompt?: string;
+        prompt?: string; canStop?: boolean; stopReason?: string;
       };
       // 这一轮发的那句话，先摆出来（见 echo）。一轮结束就撤：正常的话真的那条早到了；
       // 没跑成的话，失败提示条会把原文亮出来、能放回输入框
-      if (t.status === 'running' && t.prompt) {
+      if (e.type === 'turn_start' && t.prompt) {
         setEcho({ turnId: t.turnId, text: t.prompt, startedAt: t.startedAt, baseline: null });
       } else if (t.status !== 'running') {
         setEcho((prev) => (prev?.turnId === t.turnId ? null : prev));
@@ -970,18 +1022,20 @@ export function Conversation({ sessionKey }: { sessionKey: string }) {
         所以只认「这个页面发的」或者「半小时内结束的」，且关掉过的不再出现。
       */
       if (t.status === 'running') setFailed(null);
-      else if ((t.status === 'failed' || t.status === 'anomaly' || t.status === 'handoff') && t.error
+      else if ((t.status === 'failed' || t.status === 'anomaly' || t.status === 'handoff' || t.status === 'unconfirmed') && t.error
         && !dismissedFails().includes(t.turnId)) {
         const mine = sentTurns.current.get(t.turnId) ?? null;
-        if (mine !== null || (t.endedAt && Date.now() - t.endedAt < 30 * 60_000)) {
+        if (t.status === 'unconfirmed' || mine !== null || (t.endedAt && Date.now() - t.endedAt < 30 * 60_000)) {
           // handoff：Codex App 开着这个会话，消息交给了 App 排队（服务端 agent/codexQueue.js）——
           // 不是失败，用蓝色说一声，并把排进去的那条亮出来，让人知道它没丢
-          setFailed({ turnId: t.turnId, error: t.error, text: mine, handoff: t.status === 'handoff' });
+          setFailed({ turnId: t.turnId, error: t.error, text: mine, handoff: t.status === 'handoff', unconfirmed: t.status === 'unconfirmed' });
         }
       }
       setTick((prev) => ({
         turnId: t.turnId,
         running: t.status === 'running',
+        canStop: t.canStop,
+        stopping: !!t.stopReason,
         elapsedMs: t.status === 'running' ? Date.now() - t.startedAt : 0,
         // 这两个事件不带队列。原来写死 0，于是一轮开始或结束时「还有 N 条排着」
         // 会消失，要等下一个 tick（最多 15 秒）才回来——沿用上一次的数
@@ -991,6 +1045,7 @@ export function Conversation({ sessionKey }: { sessionKey: string }) {
     };
     es.addEventListener('turn_start', onTurn);
     es.addEventListener('turn_end', onTurn);
+    es.addEventListener('turn_control', onTurn);
 
     /*
       agent 出了一道选择题，而且**正停在那儿等**。
@@ -1001,8 +1056,8 @@ export function Conversation({ sessionKey }: { sessionKey: string }) {
     es.addEventListener('ask', (e) => setAsk(JSON.parse((e as MessageEvent).data) as PendingAsk));
     es.addEventListener('ask_end', () => setAsk(null));
 
-    return () => es.close();
-  }, [sessionKey]);
+    return () => { active = false; clearTimeout(retry); es.close(); };
+  }, [sessionKey, streamFrom]);
 
   const onScroll = useCallback(() => {
     onStickScroll();
@@ -1090,22 +1145,27 @@ export function Conversation({ sessionKey }: { sessionKey: string }) {
    * 「它会出现在左边」，由侧栏的轮询把它捡回来。
    */
   /** `interrupt` = 插队：停下正在跑的这一轮，这条第一个发（服务端 when:'interrupt'） */
-  async function submit(fork = false, interrupt = false) {
+  async function submit(forkChoice?: boolean, interruptChoice?: boolean) {
     const text = draft.trim();
     // 光有附件也能发——「看看这张图」那种情况正文本来就是空的
-    if ((!text && !atts.length) || sending) return;
+    if ((!text && !atts.length) || submitting.current) return;
     /*
       **还有文件在传就先别发。** 附件是一个一个落进 atts 的，这时候发出去只会
       带上已经传完的那几个，剩下的随后冒出来、看着像是下一条消息的——而且一声
       不吭。按钮那边也一并禁掉（uploading > 0），这里是第二道。
     */
     if (uploading > 0) return;
+    submitting.current = true;
     setSending(true);
     setSendErr(null);
     setForked(false);
     try {
       // 路径在**发送这一刻**才拼到正文末尾，不预先塞进输入框
       const full = text + attachmentSuffix(atts);
+      const previous = readPendingSend(scope, sessionKey) ?? delivery.current;
+      const resume = !goalMode && forkChoice === undefined && interruptChoice === undefined && previous?.message === full;
+      const fork = resume ? previous.fork : !!forkChoice;
+      const interrupt = resume ? previous.when === 'interrupt' : !!interruptChoice;
       /*
         **按下去那一刻就摆出来**，不等服务端回话（那要 0.3–1 秒，2026-11-10 在浏览器里量的）——
         Claude Desktop 也是这样。输入框同时清空；发不出去再撤回、把字放回去。
@@ -1115,6 +1175,17 @@ export function Conversation({ sessionKey }: { sessionKey: string }) {
       const local = `local:${localSeq.current}`;
       // 目标模式：这句是目标。Claude 那边服务端会把它变成「/goal 这句」，对话里摆的也是那样
       const asGoal = goalMode && !fork && !!text;
+      let intent: PendingSend | null = null;
+      if (!asGoal) {
+        const request = sendIntent(previous, full, fork, interrupt ? 'interrupt' : 'auto');
+        if (!canRetrySend(request.startedAt)) throw expiredSend();
+        intent = { ...request, draft,
+          attachments: atts.map((file) => ({ ...file, previewUri: null })) };
+        if (!savePendingSend(scope, sessionKey, intent)) {
+          throw new ApiError(0, 'send_storage', t('conv.sendStorage'), t('conv.sendStorageFix'));
+        }
+        delivery.current = intent;
+      }
       const shown = asGoal && (agent === 'claude' || agent === 'antigravity') ? `/goal ${full}` : full;
       /*
         跑着的时候发（排队或插队），这句先进队列、由排队那一栏显示，轮到它开跑时 turn_start 再把它摆出来。
@@ -1131,12 +1202,16 @@ export function Conversation({ sessionKey }: { sessionKey: string }) {
       }
       let r: { turnId?: string; queued?: boolean } | null;
       try {
-        r = asGoal
-          ? await api.setGoal(sessionKey, full)
-          : await api.send(sessionKey, full, fork, interrupt ? 'interrupt' : 'auto') as { turnId?: string; queued?: boolean } | null;
+        if (!intent) {
+          r = await api.setGoal(sessionKey, full);
+        } else {
+          r = await api.send(sessionKey, intent.message, intent.fork, intent.when, intent.id);
+          clearPendingSend(scope, sessionKey, intent.id);
+          delivery.current = null;
+        }
       } catch (e) {
         setEcho((prev) => (prev?.turnId === local ? null : prev));
-        if (!fork) setDraft(draft);
+        if (!fork && !draftValue.current) setDraft(draft);
         throw e;
       }
       if (r?.turnId) {
@@ -1153,19 +1228,20 @@ export function Conversation({ sessionKey }: { sessionKey: string }) {
       // 送到了才抛，趁发送键还在原地。分叉不抛：那条消息开的是另一条会话
       if (!fork) tossToTurn(scroller.current?.closest('.conv') as HTMLElement | null);
       // 不分叉的已经在按下去时清过了；这时再清会把等回话那一下新打的字也抹掉
-      if (fork) setDraft('');
+      if (fork && draftValue.current === draft) setDraft('');
       if (asGoal) {
         setGoalMode(false);
         setInfoNonce((n) => n + 1);
       }
       // 发出去之后气泡走 api.uploadUrl 重新取图，本地这份 blob 就是死的了
       atts.forEach(revokePreview);
-      setAtts([]);
+      setAtts((current) => current.filter((item) => !atts.includes(item)));
       if (fork) setForked(true);
       else scrollToBottom();
     } catch (e) {
       setSendErr(e as ApiError);
     } finally {
+      submitting.current = false;
       setSending(false);
     }
   }
@@ -1205,7 +1281,7 @@ export function Conversation({ sessionKey }: { sessionKey: string }) {
         }
       }
     },
-    [sessionKey],
+    [sessionKey, setAtts],
   );
 
   /*
@@ -1223,6 +1299,24 @@ export function Conversation({ sessionKey }: { sessionKey: string }) {
   const { dragging, dropProps } = useFileDrop(onFiles);
 
   const running = tick?.running ?? false;
+  const reply = running && stopReply?.turnId === tick?.turnId ? stopReply : null;
+  const monitorOnly = tick?.canStop === false || reply?.stopping === false;
+  const stopping = tick?.stopping || reply?.stopping;
+  const canInterrupt = !running || (!monitorOnly && !stopping);
+  const stopNote = running && (monitorOnly
+    ? t('conv.stopOnDesktop')
+    : stopping ? t('conv.stopping') : reply?.note);
+
+  async function requestStop() {
+    const turnId = tick?.turnId;
+    if (!turnId) return;
+    try {
+      const r = await api.stop(sessionKey, turnId);
+      if (r.note) setStopReply({ turnId, note: r.note, stopping: r.stopping });
+    } catch (e) {
+      setSendErr(e as ApiError);
+    }
+  }
 
   /*
     排着还没发的那几条（owner 2026-11-14：「还是不能自己选择插队还是排队啊」）。网页端原来只在状态栏写
@@ -1245,12 +1339,11 @@ export function Conversation({ sessionKey }: { sessionKey: string }) {
 
   const shownQueue = queued;
 
-  /** 排着的那条改成插队：从队列里拿出来，带 when:'interrupt' 再发（停下这一轮，它第一个发） */
+  /** 让服务端原子地提升已有队列项。结果不确定时仍按服务端队列显示。 */
   async function cutIn(q: { id: string; text: string }) {
     setSendErr(null);
     try {
-      await api.cancelQueued(sessionKey, q.id);
-      await api.send(sessionKey, q.text, false, 'interrupt');
+      await api.promoteQueued(sessionKey, q.id);
     } catch (e) {
       setSendErr(e as ApiError);
     }
@@ -1414,25 +1507,25 @@ export function Conversation({ sessionKey }: { sessionKey: string }) {
                 <span className="qrow-tag">{i === 0 ? '下一条' : `第 ${i + 1} 条`}</span>
                 <span className="qrow-text" title={q.text}>{q.text}</span>
                 {/* 插队：停下正在跑的这一轮，这条第一个发。不在跑（在等电脑上那一轮）时就是「立刻发」 */}
-                <button type="button" className="qrow-btn" onClick={() => { void cutIn(q); }}
+                {canInterrupt && <button type="button" className="qrow-btn" onClick={() => { void cutIn(q); }}
                   title="停下正在跑的这一轮，马上发这条">
                   插队
-                </button>
+                </button>}
                 <button type="button" className="qrow-btn is-quiet" onClick={() => { void withdraw(q); }}>撤回</button>
               </div>
             ))}
           </div>
         )}
-        notice={failed && (
+        notice={stopNote ? <p className="composer-note" role="status">{stopNote}</p> : failed && (
           <div className={`turnfail${failed.handoff ? ' is-info' : ''}`} role={failed.handoff ? 'status' : 'alert'}>
             <span className="turnfail-dot" aria-hidden="true" />
             <div className="turnfail-text">
-              <strong>{failed.handoff ? '已交给 Codex App' : '这一轮没跑成'}</strong>
-              <span>{failed.error}</span>
+              <strong>{failed.unconfirmed ? t('conv.desktopUnconfirmed') : failed.handoff ? '已交给 Codex App' : '这一轮没跑成'}</strong>
+              <span>{failed.unconfirmed ? t('conv.desktopUnconfirmedHelp') : failed.error}</span>
               {failed.handoff && failed.text && <span className="turnfail-quote">排进去的：{failed.text}</span>}
             </div>
             <div className="turnfail-acts">
-              {failed.text !== null && !failed.handoff && (
+              {failed.text !== null && !failed.handoff && !failed.unconfirmed && (
                 <button
                   type="button"
                   className="turnfail-btn is-primary"
@@ -1468,8 +1561,17 @@ export function Conversation({ sessionKey }: { sessionKey: string }) {
           return prev.filter((_, j) => j !== i);
         })}
         sending={sending} running={running}
-        onStop={() => tick?.turnId && api.stop(sessionKey, tick.turnId).catch(() => {})}
+        onStop={canInterrupt ? requestStop : undefined}
         err={sendErr}
+        onDiscardExpired={() => {
+          const pending = readPendingSend(scope, sessionKey) ?? delivery.current;
+          if (pending && !canRetrySend(pending.startedAt)) {
+            setDraft(draft);
+            clearPendingSend(scope, sessionKey, pending.id);
+            delivery.current = null;
+          }
+          setSendErr(null);
+        }}
         showJump={showJump}
         onJump={() => scrollToBottom()}
         goal={goal}
@@ -1539,7 +1641,7 @@ function useWide(q = '(min-width: 1100px)'): boolean {
 function Composer({
   sessionKey, agent, ask, notice, queue,
   draft, setDraft, onSubmit, onFiles, uploading, forked, atts, onRemoveAtt,
-  sending, running, onStop, err, showJump, onJump, goal, goalMode, onGoal,
+  sending, running, onStop, err, onDiscardExpired, showJump, onJump, goal, goalMode, onGoal,
 }: {
   sessionKey: string;
   agent: Agent | null;
@@ -1563,8 +1665,9 @@ function Composer({
   forked: boolean;
   sending: boolean;
   running: boolean;
-  onStop: () => void;
+  onStop?: () => void;
   err: ApiError | null;
+  onDiscardExpired: () => void;
   showJump: boolean;
   onJump: () => void;
   /** 设着的目标（没有或已达成是 null）。有就在配置条旁边亮一颗「目标」，写着它的状态 */
@@ -1573,7 +1676,7 @@ function Composer({
   goalMode?: boolean;
   onGoal?: () => void;
 }) {
-  const { locale } = useI18n();
+  const { locale, t } = useI18n();
   const isEn = locale === 'en';
   /**
    * 把「输入区上沿到视口底边」这段距离实测出来，交给 CSS 当渐隐的消失线。
@@ -1622,7 +1725,7 @@ function Composer({
         value={draft}
         onChange={setDraft}
         onSubmit={() => onSubmit()}
-        onInterrupt={() => onSubmit(false, true)}
+        onInterrupt={onStop ? () => onSubmit(false, true) : undefined}
         onFiles={onFiles}
         /* 还有文件在传就按不动：这时候发出去只会带上已经传完的那几个 */
         sending={sending || uploading > 0}
@@ -1681,6 +1784,7 @@ function Composer({
         <p className="composer-err" role="alert">
           <span>{err.message}</span>
           <span className="dim">{err.fix}</span>
+          {err.code === 'send_window_expired' && <button type="button" onClick={onDiscardExpired}>{t('conv.clearExpiredSend')}</button>}
         </p>
       )}
     </div>

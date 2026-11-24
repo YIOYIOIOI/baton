@@ -12,6 +12,8 @@ import { ago, dirLabel, dotKind, group, groupOf, type Group } from './sessions';
 import { Menu, Toasts, copyText, keyLabel, openPalette, openShortcuts, openUsage } from './ui';
 import { UsageDialog } from './Usage';
 import { Wordmark } from './Wordmark';
+import { DraftScope } from './drafts';
+import { draftScope, rememberBrowserScope } from '../../app/src/store/browserSession';
 import './workspace.css';
 
 /**
@@ -103,7 +105,8 @@ export function Shell({
   const { locale, t } = useI18n();
   const [chains, setChains] = useState<Chain[] | null>(null);
   const [err, setErr] = useState<ApiError | null>(null);
-  const [isOwner, setIsOwner] = useState<boolean>(true);
+  const [isOwner, setIsOwner] = useState(false);
+  const [scope, setScope] = useState<string | null | undefined>(undefined);
   const [closed, setClosed] = useState<Set<string>>(() => new Set());
   const [now, setNow] = useState(() => Date.now());
   const [palette, setPalette] = useState(false);
@@ -111,9 +114,18 @@ export function Shell({
   const [usage, setUsage] = useState(false);
 
   useEffect(() => {
-    api.health().then((h) => {
-      if (h.principal) setIsOwner(h.principal.isOwner);
-    }).catch(() => {});
+    let active = true;
+    const identify = () => api.health().then((h) => {
+      if (!active) return;
+      if (!h.principal?.id) { setScope(null); return; }
+      const next = draftScope(window.location.origin, h.principal.id, h.principal.generation);
+      rememberBrowserScope(next);
+      setIsOwner(h.principal.isOwner);
+      setScope(next);
+    }).catch(() => { if (active) setScope((previous) => previous ?? null); });
+    void identify();
+    window.addEventListener('online', identify);
+    return () => { active = false; window.removeEventListener('online', identify); };
   }, []);
 
   // 收放与宽度都记住：每次进来重新调一遍是纯粹的重复劳动
@@ -579,8 +591,10 @@ export function Shell({
       </aside>
 
       <main className="stage">
-        {children ? (
-          <MembersCtx.Provider value={members}>{children}</MembersCtx.Provider>
+        {children && scope !== undefined ? (
+          <DraftScope.Provider value={scope} key={scope}>
+            <MembersCtx.Provider value={members}>{children}</MembersCtx.Provider>
+          </DraftScope.Provider>
         ) : (
           <div className="stage-empty">
             <p className="stage-line">

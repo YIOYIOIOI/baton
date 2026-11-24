@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import url from 'node:url';
+import { canonicalPath, under, UPLOAD_DIR } from '../scope.js';
 
 /**
  * 静态资源服务。
@@ -29,6 +30,11 @@ const HERE = path.dirname(url.fileURLToPath(import.meta.url));
 export const LEGACY_DIR = path.join(HERE, '..', 'web');
 export const EXPO_DIR = path.join(HERE, '..', '..', 'app', 'dist');
 export const SPA_DIR = path.join(HERE, '..', '..', 'web', 'dist');
+
+/** 三套可发布的资源树都保留给客户端，包括暂未被当前 UA 选中的构建。 */
+export function inWebRoot(realTarget, roots = [LEGACY_DIR, EXPO_DIR, SPA_DIR]) {
+  return roots.some((root) => under(realTarget, root) || under(realTarget, canonicalPath(root)));
+}
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -118,7 +124,7 @@ function findDynamic(dir, suffix) {
  *   2. 最后再 resolve 一次，确认结果仍在 root 之内——防的是符号链接一类
  *      逐段检查看不出来的情况。
  */
-function resolveExact(root, pathname) {
+function staticSegments(pathname) {
   const raw = pathname.split('/').filter(Boolean);
   const segs = [];
   for (const s of raw) {
@@ -128,10 +134,18 @@ function resolveExact(root, pathname) {
     } catch {
       return null; // 坏编码
     }
-    if (d === '.' || d === '..' || d.includes('/') || d.includes('\\') || d.includes('\0')) return null;
+    if (d === '.' || d === '..' || d.includes('/') || d.includes('\\') || d.includes('\0') || isUploadSegment(d)) return null;
     segs.push(d);
   }
 
+  return segs;
+}
+
+function isUploadSegment(name) {
+  return name.toLowerCase() === UPLOAD_DIR;
+}
+
+function resolveExact(root, segs) {
   let hit = null;
   if (segs.length === 0) {
     hit = path.join(root, 'index.html');
@@ -168,8 +182,8 @@ function resolveExact(root, pathname) {
   let abs;
   let base;
   try {
-    abs = fs.realpathSync(hit);
-    base = fs.realpathSync(root);
+    abs = fs.realpathSync.native(hit);
+    base = fs.realpathSync.native(root);
   } catch {
     return null;
   }
@@ -191,10 +205,10 @@ function resolveExact(root, pathname) {
  * 回退本身也走 resolveExact，因此路径穿越的两道闸一个不少。
  */
 export function resolveStatic(root, pathname, { spa = false } = {}) {
-  const hit = resolveExact(root, pathname);
-  if (hit || !spa) return hit;
-  if (path.extname(pathname)) return null;
-  return resolveExact(root, '/');
+  const segs = staticSegments(pathname);
+  if (!segs) return null;
+  const hit = resolveExact(root, segs) ?? (spa && !path.extname(pathname) ? resolveExact(root, []) : null);
+  return hit && !hit.split(path.sep).some(isUploadSegment) ? hit : null;
 }
 
 export function mimeOf(file) {

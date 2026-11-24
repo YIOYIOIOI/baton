@@ -6,7 +6,7 @@ import { Wordmark } from './Wordmark';
 import './door.css';
 import './welcome.css';
 
-export function Welcome() {
+export function Welcome({ pending = false }: { pending?: boolean }) {
   const { locale, t } = useI18n();
   const nextLocale = locale === 'zh' ? 'en' : 'zh';
 
@@ -46,9 +46,9 @@ export function Welcome() {
             {/* 写成一个表达式：JSX 的换行会在句末留一个空格 */}
             <p className="lead">{t('welcome.lead')}</p>
             <div className="cta-row">
-              <a className="cta" href="/pair">
+              {pending ? <p role="status">{t('pair.unpairPending')}</p> : <a className="cta" href="/pair">
                 {t('welcome.cta')}
-              </a>
+              </a>}
               <p className="note">{t('welcome.note')}</p>
             </div>
           </div>

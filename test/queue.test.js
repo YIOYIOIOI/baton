@@ -208,7 +208,8 @@ test('会话已不存在时清掉队列，不让它永远留在盘上', async ()
   queue.enqueue({ key: 'claude:早就删了', text: 'x' });
 
   const resumed = await reconcileQueues({
-    repo, config: CFG, runner: async () => ({}), env: ENV, turns: idleTurns, queue,
+    repo: { ...repo, getSessionForRecovery: () => ({ status: 'missing' }) },
+    config: CFG, runner: async () => ({}), env: ENV, turns: idleTurns, queue,
   });
   assert.deepEqual(resumed, [{ key: 'claude:早就删了', dropped: 1 }]);
   assert.deepEqual(queue.keys(), []);

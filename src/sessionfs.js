@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { matchesHandlePath } from './file-identity.js';
 
 /**
  * 会话工作目录里的文件浏览与读取。
@@ -41,6 +42,16 @@ export function entryOf(full, name, st) {
   };
 }
 
+/** Scoped repositories already return the authorized physical cwd. It must still resolve there. */
+export function canonicalCwd(cwd, pinned = false) {
+  if (!cwd) throw new Error('这个会话没有工作目录。');
+  const root = fs.realpathSync.native(cwd);
+  if (pinned && root !== cwd) {
+    throw Object.assign(new Error('工作目录的位置已改变。'), { code: 'OUTSIDE' });
+  }
+  return root;
+}
+
 /**
  * 把一个相对路径解析成绝对路径，并**验证它确实在 cwd 子树里**。
  *
@@ -48,9 +59,8 @@ export function entryOf(full, name, st) {
  *   反斜杠和正斜杠都收——agent 写出来的路径两种都有，而这是给人点的。
  * @returns {{ root: string, full: string, relative: string }} relative 一律用 `/`，客户端只认这一种。
  */
-export function resolveInCwd(cwd, rel) {
-  if (!cwd) throw new Error('这个会话没有工作目录。');
-  const root = fs.realpathSync(cwd); // cwd 本身不存在就在这里抛，正好
+export function resolveInCwd(cwd, rel, pinnedCwd = false) {
+  const root = canonicalCwd(cwd, pinnedCwd);
 
   const clean = String(rel ?? '').replace(/\\/g, '/').replace(/^\/+/, '');
   // path.resolve 会把 `..` 折掉，但折出来的结果仍然可能在 root 外面——
@@ -58,7 +68,7 @@ export function resolveInCwd(cwd, rel) {
   const target = path.resolve(root, clean);
 
   // realpath 要求路径已存在。不存在就是「没有这个东西」，交给调用方转 404
-  const full = fs.realpathSync(target);
+  const full = fs.realpathSync.native(target);
   // root 自己就以分隔符结尾时（会话建在盘根 `C:\`、或 posix 的 `/`）不能再加一个：
   // `C:\` + `\` = `C:\\`，盘根下的任何东西都不以它开头，于是整棵树都被当成「越界」
   const prefix = root.endsWith(path.sep) ? root : root + path.sep;
@@ -76,8 +86,8 @@ export function resolveInCwd(cwd, rel) {
  * 逐项 stat 且**不抛**：一棵真实的工作目录里一定有读不动的东西（占用中的文件、
  * 权限不够的目录），它们不能让整个请求失败——跳过就是了，列表本身还有用。
  */
-export function listInCwd(cwd, rel) {
-  const { full, relative } = resolveInCwd(cwd, rel);
+export function listInCwd(cwd, rel, pinnedCwd = false) {
+  const { full, relative } = resolveInCwd(cwd, rel, pinnedCwd);
   const st = fs.statSync(full);
   if (!st.isDirectory()) {
     throw Object.assign(new Error('这是个文件，不是目录。'), { code: 'NOTDIR' });
@@ -110,24 +120,39 @@ export function listInCwd(cwd, rel) {
  * 在这里就打开，而不是让流自己去开：Windows 上被别的程序锁着的文件（正在用的数据库）
  * 打开会失败，要在发响应头**之前**知道，才回得了一个清楚的错误。
  */
-export function openInCwd(cwd, rel) {
-  const { full, relative } = resolveInCwd(cwd, rel);
-  const st = fs.statSync(full);
+export async function openInCwd(cwd, rel, pinnedCwd = false) {
+  const { root, full, relative } = resolveInCwd(cwd, rel, pinnedCwd);
+  return { ...await openVerifiedFile(root, full), relative };
+}
+
+/** Paths are canonical. Keep the descriptor open throughout identity and containment checks. */
+export async function openVerifiedFile(root, full) {
+  const outside = () => Object.assign(new Error('文件已移出目录或无法确认其位置。'), { code: 'OUTSIDE' });
+  const prefix = root.endsWith(path.sep) ? root : root + path.sep;
+  if (!full.startsWith(prefix) && full !== root) throw outside();
+  const st = fs.statSync(full, { bigint: true });
   if (st.isDirectory()) {
     throw Object.assign(new Error('这是个目录，不是文件。'), { code: 'ISDIR' });
   }
   if (!st.isFile()) {
     throw Object.assign(new Error('只支持读取普通文件。'), { code: 'ENOTFILE' });
   }
-  const flags = fs.constants.O_RDONLY | (fs.constants.O_NONBLOCK ?? 0);
+  const flags = fs.constants.O_RDONLY | (fs.constants.O_NONBLOCK ?? 0) | (fs.constants.O_NOFOLLOW ?? 0);
   const fd = fs.openSync(full, flags);
   // Close immediately on fstat failure or non-regular file so the daemon never leaks FDs.
   try {
-    const fst = fs.fstatSync(fd);
-    if (typeof fst.isFile === 'function' && !fst.isFile()) {
-      throw Object.assign(new Error('只支持读取普通文件。'), { code: 'ENOTFILE' });
-    }
-    return { fd, full, name: path.basename(full), size: fst.size, relative };
+    const fst = fs.fstatSync(fd, { bigint: true });
+    if (!fst.isFile()) throw outside();
+    if (fs.realpathSync.native(root) !== root || fs.realpathSync.native(full) !== full) throw outside();
+    const after = fs.lstatSync(full, { bigint: true });
+    if (!after.isFile()) throw outside();
+    const comparable = fst.ino && (fst.dev || process.platform === 'linux')
+      && st.dev === fst.dev && st.ino === fst.ino && after.dev === fst.dev && after.ino === fst.ino;
+    if (!comparable && process.platform !== 'win32') throw outside();
+    if (!await matchesHandlePath(fd, full, comparable ? fst : null)) throw outside();
+    const size = Number(fst.size);
+    if (!Number.isSafeInteger(size) || size < 0) throw outside();
+    return { fd, full, name: path.basename(full), size };
   } catch (err) {
     try { fs.closeSync(fd); } catch { /* ignore close errors */ }
     throw err;

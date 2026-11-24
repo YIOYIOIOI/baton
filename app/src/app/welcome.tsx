@@ -5,6 +5,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme, type Theme } from '@/theme';
 import { PillDark } from '@/components/ui';
 import { useLocale } from '@/i18n';
+import { useConnection } from '@/store/connection';
 
 /**
  * 首屏。按 .design/01-welcome.png **逐像素复刻**——这是 owner 点名要照搬的那一屏。
@@ -62,6 +63,8 @@ export default function WelcomeScreen() {
   const inset = useSafeAreaInsets();
   const [box, setBox] = useState({ w: 0, h: 0 });
   const { isEn, setPref, en, trNew } = useLocale();
+  const pendingUnpair = useConnection((state) => state.pendingUnpair);
+  const storageError = useConnection((state) => state.unpairStorageError);
   const s = styles(t);
 
   const onLayout = (e: LayoutChangeEvent) => {
@@ -128,7 +131,9 @@ export default function WelcomeScreen() {
         插画是这一屏的主角，按钮不该切断它。收窄居中之后两侧都能露出手。
       */}
       <View style={[s.actionWrap, { paddingBottom: Math.max(16, inset.bottom) }]}>
+        {pendingUnpair && <Text accessibilityLiveRegion="polite">{trNew(storageError ? 'pair.unpairStorageError' : 'pair.unpairPending')}</Text>}
         <PillDark
+          disabled={pendingUnpair}
           label={isEn ? en('welcome.connect') : '连接电脑'}
           onPress={() => router.push('/pair')}
           style={s.action}

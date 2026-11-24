@@ -7,6 +7,10 @@ import { fileURLToPath } from 'node:url';
 import { BATON_DIR } from '../config.js';
 import { normPath } from '../scope.js';
 import { pidAlive } from '../runtime/live.js';
+import { readRegistration, registryDirectory } from '../../sidecars/baton-bridge/sidecars/bridge/registry.mjs';
+import {
+  healthProof, isNonce, LOOPBACK, matchesProof, MAX_BODY, newNonce, PROTOCOL, requestHeaders, responseProof,
+} from '../../sidecars/baton-bridge/sidecars/bridge/protocol.mjs';
 
 export const DEFAULT_GEMINI_CONFIG = path.join(os.homedir(), '.gemini', 'config');
 const BRIDGE_SOURCE_DIR = path.resolve(
@@ -135,52 +139,66 @@ export function resolveAntigravityProjectId(cwd, {
   return id;
 }
 
-function readToken(batonDir) {
-  try {
-    const t = fs.readFileSync(path.join(batonDir, 'token'), 'utf8').trim();
-    return t || null;
-  } catch {
-    return null;
-  }
-}
+// Only handles returned after a successful challenge can dispatch. The secret never
+// travels over HTTP and is absent from serializable session or diagnostic data.
+const verified = new WeakMap();
 
-export function callBridge(bridge, pathname, { method = 'POST', body = null, token = bridge.token, timeoutMs = 15_000 } = {}) {
+function exchange(instance, pathname, { method = 'GET', data = '', nonce = null, timeoutMs }) {
   return new Promise((resolve, reject) => {
-    const data = body == null ? null : JSON.stringify(body);
     const req = http.request({
-      host: bridge.host || '127.0.0.1',
-      port: bridge.port,
-      path: pathname,
-      method,
-      headers: {
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        ...(data ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) } : {}),
-      },
+      host: LOOPBACK, family: 4, port: instance.port, path: pathname, method,
+      headers: nonce ? {
+        ...requestHeaders(instance, pathname, data, nonce),
+        'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data),
+      } : {},
     }, (res) => {
       const chunks = [];
-      res.on('data', (c) => chunks.push(c));
+      let bytes = 0;
+      res.on('data', (chunk) => {
+        bytes += chunk.length;
+        if (bytes > MAX_BODY) res.destroy(new Error('Antigravity 桥接服务回执过大'));
+        else chunks.push(chunk);
+      });
+      res.on('error', rejectTransport);
       res.on('end', () => {
-        const raw = Buffer.concat(chunks).toString('utf8');
-        let parsed = null;
+        const raw = Buffer.concat(chunks);
+        if (nonce && !matchesProof(responseProof(instance, nonce, res.statusCode, raw), res.headers['x-baton-proof'])) {
+          return rejectTransport(new Error('无法验证 Antigravity 桥接服务的调用回执'));
+        }
+        let parsed;
         try {
-          parsed = raw ? JSON.parse(raw) : {};
+          parsed = JSON.parse(raw.toString('utf8'));
         } catch {
-          parsed = { raw };
+          return rejectTransport(new Error('Antigravity 桥接服务回执格式无效'));
         }
-        if ((res.statusCode ?? 0) >= 200 && (res.statusCode ?? 0) < 300 && parsed?.ok !== false) {
-          resolve(parsed);
-        } else {
-          reject(new Error(parsed?.error ?? `bridge HTTP ${res.statusCode}`));
+        if (res.statusCode >= 200 && res.statusCode < 300 && parsed?.ok === true && parsed.delivery === undefined) {
+          return resolve(parsed);
         }
+        const error = new Error(typeof parsed?.error === 'string' ? parsed.error : 'bridge HTTP ' + res.statusCode);
+        if (nonce && res.statusCode >= 400 && res.statusCode < 600 && parsed?.ok === false && parsed.delivery === 'not_dispatched') {
+          return reject(error);
+        }
+        rejectTransport(error);
       });
     });
-    req.setTimeout(timeoutMs, () => {
-      req.destroy(new Error('Antigravity 桥接服务响应超时'));
-    });
-    req.on('error', reject);
-    if (data) req.write(data);
-    req.end();
+    const timer = setTimeout(() => req.destroy(new Error('Antigravity 桥接服务响应超时')), timeoutMs);
+    timer.unref();
+    req.on('close', () => clearTimeout(timer));
+    function rejectTransport(error) {
+      if (method === 'POST' && req.writableFinished) error.deliveryUnknown = true;
+      reject(error);
+    }
+    req.on('error', rejectTransport);
+    req.end(data || undefined);
   });
+}
+
+export async function callBridge(bridge, pathname, { method = 'POST', body = null, timeoutMs = 15_000 } = {}) {
+  const instance = verified.get(bridge);
+  if (!instance || method !== 'POST') throw new Error('Antigravity 桥接实例尚未通过验证');
+  const data = JSON.stringify(body ?? {});
+  if (Buffer.byteLength(data) > MAX_BODY) throw new Error('Antigravity 桥接请求体过大');
+  return exchange(instance, pathname, { method, data, nonce: newNonce(), timeoutMs });
 }
 
 /**
@@ -188,27 +206,25 @@ export function callBridge(bridge, pathname, { method = 'POST', body = null, tok
  * @param {{ batonDir?: string, projectId?: string | null, alive?: (pid: unknown) => boolean }} [opts]
  */
 export async function findLiveBridge({ batonDir = BATON_DIR, projectId = null, alive = pidAlive } = {}) {
-  const dir = path.join(batonDir, 'antigravity-bridges');
+  let dir;
   let names = [];
   try {
+    dir = registryDirectory(batonDir);
     names = fs.readdirSync(dir);
   } catch {
     return null;
   }
-  const token = readToken(batonDir);
-  if (!token) return null;
-
   const candidates = [];
   for (const name of names) {
     if (!name.endsWith('.json')) continue;
     const file = path.join(dir, name);
     let raw;
     try {
-      raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+      raw = readRegistration(file);
     } catch {
       continue;
     }
-    if (!Number.isInteger(raw?.pid) || !Number.isInteger(raw?.port) || raw.port <= 0) continue;
+    if (!Number.isSafeInteger(raw?.pid) || raw.pid <= 0 || name !== raw.pid + '.json') continue;
     if (!alive(raw.pid)) {
       try {
         fs.unlinkSync(file);
@@ -217,7 +233,11 @@ export async function findLiveBridge({ batonDir = BATON_DIR, projectId = null, a
       }
       continue;
     }
-    candidates.push({ ...raw, token });
+    // Running v1 sidecars upgrade on the next desktop restart. Never probe them with the owner token.
+    if (raw.protocol !== PROTOCOL || raw.host !== LOOPBACK || !Number.isInteger(raw.port) || raw.port < 1 || raw.port > 65535
+        || !isNonce(raw.secret) || typeof raw.instanceId !== 'string' || !/^[0-9a-f-]{36}$/.test(raw.instanceId)
+        || !(typeof raw.projectId === 'string' || raw.projectId === null)) continue;
+    candidates.push(raw);
   }
 
   candidates.sort((a, b) => {
@@ -228,8 +248,13 @@ export async function findLiveBridge({ batonDir = BATON_DIR, projectId = null, a
 
   for (const c of candidates) {
     try {
-      await callBridge(c, '/health', { method: 'GET', timeoutMs: 2000 });
-      return c;
+      const challenge = newNonce();
+      const health = await exchange(c, '/health?challenge=' + challenge, { timeoutMs: 2000 });
+      if (health.protocol !== PROTOCOL || health.instanceId !== c.instanceId || health.pid !== c.pid
+          || health.projectId !== c.projectId || !matchesProof(healthProof(c, challenge), health.proof)) continue;
+      const handle = Object.freeze({ pid: c.pid, port: c.port, projectId: c.projectId, instanceId: c.instanceId });
+      verified.set(handle, c);
+      return handle;
     } catch {
       // 该实例连不上，看下一个
     }

@@ -9,7 +9,7 @@ import { listInCwd, resolveInCwd } from '../src/sessionfs.js';
 // 包含性校验原来写的是 `root + sep`，拼出 `C:\\`，盘根下任何东西都不以它开头——
 // 文件浏览器进根能看到一层，点进任何一个文件夹都报「不在工作目录里」。
 
-const tmp = fs.realpathSync(os.tmpdir());
+const tmp = fs.realpathSync.native(os.tmpdir());
 const fsRoot = path.parse(tmp).root;
 const first = path.relative(fsRoot, tmp).split(path.sep)[0];
 

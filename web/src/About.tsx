@@ -6,6 +6,7 @@ import { setPrefs, usePrefs, type ListMode, type LocalePref, type Size, type The
 import { ago } from './sessions';
 import { copyText, keyLabel, openShortcuts } from './ui';
 import { UsagePanel } from './Usage';
+import { lockBrowser, retryBrowserUnpair } from '../../app/src/store/browserSession';
 import './new.css';
 import './settings.css';
 
@@ -39,11 +40,10 @@ function Choice<T extends string>({
 export function About() {
   const prefs = usePrefs();
   const { t, locale } = useI18n();
-  const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<ApiError | null>(null);
   const [allowSend, setAllowSend] = useState<boolean | null>(null);
   const [version, setVersion] = useState<string | null>(null);
-  const [isOwner, setIsOwner] = useState<boolean>(true);
+  const [isOwner, setIsOwner] = useState(false);
   const [devices, setDevices] = useState<DeviceItem[] | null>(null);
   const [revokingId, setRevokingId] = useState<string | null>(null);
   const [qr, setQr] = useState<PairQrResult | null>(null);
@@ -93,15 +93,8 @@ export function About() {
   });
 
   async function unpair() {
-    setBusy(true);
-    setErr(null);
-    try {
-      await api.unpair();
-      window.location.href = '/welcome';
-    } catch (e) {
-      setErr(e as ApiError);
-      setBusy(false);
-    }
+    await lockBrowser();
+    await retryBrowserUnpair();
   }
 
   async function revoke(id: string) {
@@ -110,7 +103,7 @@ export function About() {
     try {
       const res = await api.revokeDevice(id);
       if (res.self) {
-        window.location.href = '/welcome';
+        void unpair();
         return;
       }
       setDevices((prev) => (prev ? prev.filter((d) => d.id !== id) : prev));
@@ -397,8 +390,8 @@ export function About() {
                   <span className="set-row-label">{t('about.unpairTitle')}</span>
                   <span className="set-row-note">{t('about.unpairNote')}</span>
                 </div>
-                <button className="about-danger" type="button" onClick={unpair} disabled={busy}>
-                  {busy ? t('about.unpairBusy') : t('about.unpairBtn')}
+                <button className="about-danger" type="button" onClick={unpair}>
+                  {t('about.unpairBtn')}
                 </button>
               </div>
               {err && (

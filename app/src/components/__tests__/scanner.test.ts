@@ -57,3 +57,11 @@ test('小写链接参数会被转成大写——字母表去掉了 0O1I，不会
 test('参数名不是 c 的不认', () => {
   expect(parseScanned('https://a.b/pair?code=ABCD2345EFGH')).toBeNull();
 });
+
+test.each([
+  'ftp://qr.example.test/pair?c=ABCD2345EFGH',
+  'file:///pair?c=ABCD2345EFGH',
+  'https://name@qr.example.test/pair?c=ABCD2345EFGH',
+])('带码的非 HTTP(S) 或带用户信息的链接不参与配对', (url) => {
+  expect(parseScanned(url)).toBeNull();
+});

@@ -140,3 +140,35 @@ test('makeDir：guest 在自己 root 之下可以建', () => {
   assert.equal(r.status, 201);
   assert.equal(fs.existsSync(path.join(root, 'newproj')), true);
 });
+
+test('目录授权校验实际父目录，允许在工作区内的别名下面递归新建', () => {
+  const base = fixture();
+  const root = path.join(base, 'alpha');
+  const inside = path.join(root, 'project');
+  fs.mkdirSync(inside);
+  const outside = path.join(base, 'beta');
+  const principal = { id: 'friend', roots: [root] };
+  const config = { allowSend: true };
+  const link = process.platform === 'win32' ? 'junction' : 'dir';
+  fs.symlinkSync(inside, path.join(root, 'inside'), link);
+  fs.symlinkSync(outside, path.join(root, 'outside'), link);
+  const denied = path.join(root, 'outside');
+  assert.equal(browseDirs({ repo: emptyRepo, principal, path: denied }).status, 403);
+  assert.equal(makeDir({ config, principal, path: path.join(denied, 'new', 'child') }).status, 403);
+  assert.equal(fs.existsSync(path.join(outside, 'new')), false);
+  assert.equal(makeDir({ config, principal, path: path.join(root, 'inside', 'new', 'child') }).status, 201);
+  assert.equal(fs.statSync(path.join(inside, 'new', 'child')).isDirectory(), true);
+});
+
+test('访客创建目录时区分普通缺失后缀与悬空的父链接', () => {
+  const root = tmpDir();
+  const principal = { id: 'friend', roots: [root] };
+  const config = { allowSend: true };
+  const missing = path.join(root, 'unused');
+  const broken = path.join(root, 'broken');
+  fs.symlinkSync(missing, broken, process.platform === 'win32' ? 'junction' : 'dir');
+  assert.equal(makeDir({ config, principal, path: path.join(broken, 'child') }).status, 403);
+  assert.equal(fs.existsSync(missing), false);
+  assert.equal(browseDirs({ repo: emptyRepo, principal, path: missing }).status, 404);
+  assert.equal(makeDir({ config, principal, path: path.join(missing, 'child') }).status, 201);
+});

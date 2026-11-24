@@ -18,7 +18,7 @@ process.on('exit', () => {
 });
 
 export function tmpDir(prefix = 'baton-test-') {
-  const d = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  const d = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
   made.push(d);
   return d;
 }

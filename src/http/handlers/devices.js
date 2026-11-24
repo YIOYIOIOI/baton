@@ -28,7 +28,7 @@ function requestOrigin(req, config, interfaces = os.networkInterfaces()) {
 /** List paired devices visible to the caller (all for owner, own principal for guests). */
 export function listDevices({ auth, principal, deviceId = null }) {
   const scopeId = isOwner(principal) ? null : principal?.id;
-  const rows = (auth.listDevices?.({ principalId: scopeId }) ?? []).map((d) => ({
+  const rows = (auth.listDevices?.({ principalId: scopeId }) ?? []).map(({ generation: _generation, ...d }) => ({
     ...d,
     current: Boolean(deviceId && d.id === deviceId),
   }));
@@ -46,19 +46,20 @@ export function revokeDevice({ auth, principal, body, deviceId = null, audit = a
   }
   const visible = auth.listDevices?.({ principalId: isOwner(principal) ? null : principal?.id }) ?? [];
   const hit = visible.find((d) => d.id === targetId);
-  if (!hit) {
+  if (!hit && !(isOwner(principal) && /^[A-Za-z0-9_-]{16}$/.test(targetId))) {
     return {
       status: 404,
       body: errorBody('unknown_device', 'Device not found or already revoked.', 'Refresh the Connected Devices list.'),
     };
   }
-  auth.revokeDevice?.(hit.id, hit.principalId);
+  // 已签名设备即使丢失展示清单条目仍可使用。owner 可用保存的设备号直接吊销。
+  auth.revokeDevice(targetId, hit?.principalId ?? 'unknown');
   try {
-    audit({ type: 'device_revoked', principal: principal?.id ?? OWNER_ID, targetDeviceId: hit.id, targetPrincipal: hit.principalId });
+    audit({ type: 'device_revoked', principal: principal?.id ?? OWNER_ID, targetDeviceId: targetId, targetPrincipal: hit?.principalId ?? null });
   } catch {
     // Non-fatal if audit directory is unwritable in an injected unit test
   }
-  return { status: 200, body: { ok: true, revoked: true, self: hit.id === deviceId } };
+  return { status: 200, body: { ok: true, revoked: true, self: targetId === deviceId } };
 }
 
 /** Owner-only endpoint returning a one-time pairing code + scannable QR SVG for browser-based pairing. */

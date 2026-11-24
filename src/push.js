@@ -5,6 +5,9 @@ import https from 'node:https';
 import net from 'node:net';
 import path from 'node:path';
 import { BATON_DIR } from './config.js';
+import { withJsonWriteLock, writeJsonAtomic } from './json-store.js';
+import { fileRevocations } from './revocations.js';
+import { isCurrentPrincipal } from './principals.js';
 
 /**
  * Web Push。零依赖实现，只用 node:crypto。
@@ -18,24 +21,23 @@ import { BATON_DIR } from './config.js';
  */
 
 const FILE = () => path.join(BATON_DIR, 'push.json');
+const MAX_SUBSCRIPTIONS = 32;
+const revocations = fileRevocations(path.join(BATON_DIR, 'revoked.json'));
+const deviceValid = (deviceId) => !revocations.isRevoked(deviceId);
 
 const b64url = (buf) => Buffer.from(buf).toString('base64url');
 
 function load() {
   try {
-    return JSON.parse(fs.readFileSync(FILE(), 'utf8'));
-  } catch {
-    return null;
+    const state = JSON.parse(fs.readFileSync(FILE(), 'utf8'));
+    if (!state?.publicKey || !state.privateKeyPem || !Array.isArray(state.subscriptions)) {
+      throw Object.assign(new Error('推送配置损坏，请从备份恢复。'), { code: 'invalid_push_store' });
+    }
+    return state;
+  } catch (err) {
+    if (err.code === 'ENOENT') return null;
+    throw err;
   }
-}
-
-function save(state) {
-  fs.mkdirSync(BATON_DIR, { recursive: true });
-  const tmp = `${FILE()}.${process.pid}.${crypto.randomBytes(4).toString('hex')}.tmp`;
-  // 私钥不能给别人读——和 ~/.baton/token 同一个道理
-  fs.writeFileSync(tmp, JSON.stringify(state, null, 1), { mode: 0o600 });
-  fs.renameSync(tmp, FILE());
-  return state;
 }
 
 function isDisallowedIp(rawHost) {
@@ -85,7 +87,7 @@ export async function resolvePublicTarget(endpoint, lookup = dns.promises.lookup
   return { url, host, address: picked.address, family };
 }
 
-function sendPinnedPush({ url, target, headers, timeoutMs, requestImpl = https.request }) {
+function sendPinnedPush({ url, target, headers, signal, requestImpl = https.request }) {
   return new Promise((resolve, reject) => {
     let settled = false;
     const done = (err, val) => {
@@ -101,7 +103,7 @@ function sendPinnedPush({ url, target, headers, timeoutMs, requestImpl = https.r
       path: `${url.pathname}${url.search}`,
       method: 'POST',
       headers,
-      timeout: timeoutMs,
+      signal,
       ...(target.address
         ? {
           lookup(_hostname, opts, cb) {
@@ -117,12 +119,9 @@ function sendPinnedPush({ url, target, headers, timeoutMs, requestImpl = https.r
     };
     const req = requestImpl(reqOpts, (res) => {
       const status = res.statusCode ?? 0;
-      // Do not follow 3xx redirects; drain and discard body immediately to release socket.
-      res.resume();
+      // Only the status matters. A streaming response must not keep the socket alive.
+      res.destroy();
       done(null, { status, ok: status >= 200 && status < 300 });
-    });
-    req.setTimeout(timeoutMs, () => {
-      req.destroy(new Error(`Push request timed out after ${timeoutMs}ms`));
     });
     req.on('error', (err) => done(err));
     req.end();
@@ -134,18 +133,25 @@ function sendPinnedPush({ url, target, headers, timeoutMs, requestImpl = https.r
  * 换了密钥，所有已有订阅**立刻全部失效**——推送服务按公钥认订阅。
  * 所以它必须落盘，不能每次启动重新生成。
  */
-export function ensureKeys() {
-  const existing = load();
-  if (existing?.privateKeyPem && existing?.publicKey) return existing;
-
+function newState() {
   const { privateKey, publicKey } = crypto.generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
   // 未压缩点格式 0x04||X||Y，共 65 字节——推送服务只认这个
   const raw = publicKey.export({ type: 'spki', format: 'der' }).subarray(-65);
 
-  return save({
+  return {
     privateKeyPem: privateKey.export({ type: 'pkcs8', format: 'pem' }),
     publicKey: b64url(raw),
-    subscriptions: existing?.subscriptions ?? [],
+    subscriptions: [],
+  };
+}
+
+export function ensureKeys() {
+  return load() ?? withJsonWriteLock(FILE(), () => {
+    const existing = load();
+    if (existing) return existing;
+    const state = newState();
+    writeJsonAtomic(FILE(), state);
+    return state;
   });
 }
 
@@ -185,6 +191,7 @@ const ownerOf = (s) => s?.principalId ?? 'owner';
 /** 校验 Web Push endpoint，只放行公网 HTTPS，阻断内网/本机/保留地址（防 SSRF）。 */
 export function validatePushEndpoint(raw) {
   if (!raw || typeof raw !== 'string') throw new Error('订阅缺少 endpoint');
+  if (Buffer.byteLength(raw) > 4096) throw new Error('订阅 endpoint 超过 4096 字节。');
   let u;
   try {
     u = new URL(raw);
@@ -206,32 +213,54 @@ export function validatePushEndpoint(raw) {
 }
 
 export function listSubscriptions() {
-  return ensureKeys().subscriptions ?? [];
+  return load()?.subscriptions ?? [];
 }
 
-export function subscribe(sub, principalId = 'owner') {
+export function subscribe(sub, principalId, deviceId, generation = null, valid = deviceValid) {
   validatePushEndpoint(sub?.endpoint);
-  const state = ensureKeys();
-  const subs = state.subscriptions ?? [];
-  if (subs.some((s) => s.endpoint === sub.endpoint && ownerOf(s) !== principalId)) {
-    throw new Error('该推送订阅已归属其他身份');
-  }
-  // endpoint + principalId 作为去重键，同一身份重复订阅覆盖而不是堆叠
-  const next = subs.filter((s) => !(s.endpoint === sub.endpoint && ownerOf(s) === principalId));
-  // principalId 由服务端从已认证的身份填入，**不信客户端自报**——
-  // 信了的话访客报一个 'owner' 就能收到 owner 的全部通知。
-  next.push({ endpoint: sub.endpoint, principalId, addedAt: Date.now() });
-  save({ ...state, subscriptions: next });
-  return next.length;
+  return withJsonWriteLock(FILE(), () => {
+    if (!deviceId || !valid(deviceId)) {
+      throw Object.assign(new Error('请使用已配对的设备启用推送。'), { code: 'paired_device_required' });
+    }
+    const state = load() ?? newState();
+    const active = state.subscriptions.filter((s) => ownerOf(s) !== principalId || !s.deviceId || (s.generation ?? null) === generation);
+    const existing = active.find((s) => s.endpoint === sub.endpoint);
+    if (existing && (ownerOf(existing) !== principalId || (existing.deviceId && existing.deviceId !== deviceId))) {
+      throw new Error('该推送订阅已归属其他身份或设备。');
+    }
+    const count = active.filter((s) => ownerOf(s) === principalId && s.deviceId).length;
+    if (existing?.deviceId) return count;
+    if (count >= MAX_SUBSCRIPTIONS) {
+      throw Object.assign(new Error('这个身份已达到 32 个推送订阅的上限。'), { code: 'push_subscription_limit' });
+    }
+    const subscriptions = active.filter((s) => s !== existing);
+    subscriptions.push({ endpoint: sub.endpoint, principalId, deviceId, generation, bindingId: crypto.randomUUID(), addedAt: Date.now() });
+    writeJsonAtomic(FILE(), { ...state, subscriptions });
+    return count + 1;
+  });
 }
 
-export function unsubscribe(endpoint, principalId = null) {
-  const state = ensureKeys();
-  const subs = (state.subscriptions ?? []).filter(
-    (s) => !(s.endpoint === endpoint && (principalId === null || ownerOf(s) === principalId)),
-  );
-  save({ ...state, subscriptions: subs });
-  return subs.length;
+function removeSubscriptions(matches) {
+  // A registration can be staged in another process before the device was revoked.
+  // Wait for its write and inspect the committed snapshot even when this endpoint is absent now.
+  return withJsonWriteLock(FILE(), () => {
+    const state = load();
+    if (!state) return 0;
+    const subscriptions = state.subscriptions.filter((s) => !matches(s));
+    const removed = state.subscriptions.length - subscriptions.length;
+    if (removed) writeJsonAtomic(FILE(), { ...state, subscriptions });
+    return removed;
+  });
+}
+
+export function removeDeviceSubscriptions(deviceId) {
+  return removeSubscriptions((s) => s.deviceId === deviceId);
+}
+
+export function unsubscribe(endpoint, principalId = null, deviceId = null) {
+  removeSubscriptions((s) => s.endpoint === endpoint &&
+    (principalId === null || (ownerOf(s) === principalId && deviceId && s.deviceId === deviceId)));
+  return listSubscriptions().filter((s) => principalId === null || ownerOf(s) === principalId).length;
 }
 
 // ── 发送 ────────────────────────────────────────
@@ -243,60 +272,52 @@ export function unsubscribe(endpoint, principalId = null) {
  * **必须就地删掉**——留着的话每轮都去敲一次注定失败的门，日志里全是噪音。
  */
 export async function notify({
-  principalId = 'owner', fetchImpl = fetch,
+  principalId = 'owner', generation = null, principal = null, fetchImpl = fetch,
   lookup = fetchImpl === fetch ? dns.promises.lookup : null,
   requestImpl = https.request,
   now = Date.now(), ttl = 600, timeoutMs = 10_000,
 } = {}) {
-  const state = ensureKeys();
-  // 只推给这个身份的订阅。不分区的话，访客的手机会弹出 owner 的会话标题。
-  // 旧订阅没有 principalId，视为 owner。
-  const subs = (state.subscriptions ?? []).filter((s) => ownerOf(s) === principalId);
+  const state = load();
+  const subs = (state?.subscriptions ?? []).filter((s) =>
+    s.deviceId && ownerOf(s) === principalId && (s.generation ?? null) === generation).slice(0, MAX_SUBSCRIPTIONS);
   if (!subs.length) return { sent: 0, dropped: 0 };
 
-  let sent = 0;
+  const stop = new AbortController();
+  let timer;
+  const expired = new Promise((resolve) => {
+    timer = setTimeout(() => { stop.abort(); resolve(null); }, timeoutMs);
+  });
   const dead = [];
-  for (const s of subs) {
-    let res = null;
-    try {
-      validatePushEndpoint(s.endpoint);
-      const target = await resolvePublicTarget(s.endpoint, lookup);
-      const headers = {
-        TTL: String(ttl),
-        Authorization: `vapid t=${vapidJwt(s.endpoint, state.privateKeyPem, { now })}, k=${state.publicKey}`,
-        'Content-Length': '0',
-      };
-      if (fetchImpl !== fetch) {
-        res = await fetchImpl(s.endpoint, {
-          method: 'POST',
-          redirect: 'error',
-          signal: AbortSignal.timeout(timeoutMs),
-          headers,
-        });
-      } else {
-        res = await sendPinnedPush({ url: target.url, target, headers, timeoutMs, requestImpl });
-      }
-      if (res.status === 404 || res.status === 410) dead.push(s.endpoint);
-      else if (res.ok || res.status === 201) sent += 1;
-    } catch {
-      // 网络抖动或 SSRF/重定向拦截不算可恢复订阅变更——只有推送服务明确说 404/410 才删
-    } finally {
-      await res?.body?.cancel?.().catch(() => {});
-    }
+  let sent = 0;
+  async function deliver(s) {
+    validatePushEndpoint(s.endpoint);
+    if (!isCurrentPrincipal(principal) || !deviceValid(s.deviceId)) return null;
+    const target = await resolvePublicTarget(s.endpoint, lookup);
+    if (stop.signal.aborted || !isCurrentPrincipal(principal) || !deviceValid(s.deviceId)
+      || !listSubscriptions().some((current) => current.bindingId === s.bindingId && current.deviceId === s.deviceId && current.endpoint === s.endpoint)) return null;
+    const headers = {
+      TTL: String(ttl),
+      Authorization: `vapid t=${vapidJwt(s.endpoint, state.privateKeyPem, { now })}, k=${state.publicKey}`,
+      'Content-Length': '0',
+    };
+    if (fetchImpl === fetch) return sendPinnedPush({ url: target.url, target, headers, signal: stop.signal, requestImpl });
+    const res = await fetchImpl(s.endpoint, { method: 'POST', redirect: 'error', signal: stop.signal, headers });
+    res?.body?.cancel?.().catch(() => {});
+    return res;
   }
 
-  if (dead.length) {
-    // Re-read current disk state after async network awaits so concurrent subscribe/setLatest
-    // calls during notify are never clobbered.
-    const latest = ensureKeys();
-    save({
-      ...latest,
-      subscriptions: (latest.subscriptions ?? []).filter(
-        (s) => !(dead.includes(s.endpoint) && ownerOf(s) === principalId),
-      ),
-    });
-  }
-  return { sent, dropped: dead.length };
+  try {
+    for (const s of subs) {
+      if (stop.signal.aborted) break;
+      try {
+        const res = await Promise.race([deliver(s), expired]);
+        if (res?.status === 404 || res?.status === 410) dead.push(s.bindingId);
+        else if (res?.ok || res?.status === 201) sent++;
+      } catch { /* Network and DNS failures leave the subscription intact. */ }
+    }
+  } finally { clearTimeout(timer); }
+  const dropped = dead.length ? removeSubscriptions((s) => dead.includes(s.bindingId)) : 0;
+  return { sent, dropped };
 }
 
 // ── 最近一次结束的轮次 ──────────────────────────
@@ -308,10 +329,11 @@ export async function notify({
  * 而这里只有一条，读一次就够。也更准——SW 拿到的就是触发这次推送的那一轮。
  */
 export function setLatest(principalId, latest) {
-  const state = ensureKeys();
-  const byPrincipal = { ...state.latestByPrincipal };
-  byPrincipal[principalId] = { ...latest, at: latest.at ?? Date.now() };
-  save({ ...state, latestByPrincipal: byPrincipal });
+  withJsonWriteLock(FILE(), () => {
+    const state = load() ?? newState();
+    const byPrincipal = { ...state.latestByPrincipal, [principalId]: { ...latest, at: latest.at ?? Date.now() } };
+    writeJsonAtomic(FILE(), { ...state, latestByPrincipal: byPrincipal });
+  });
   return latest;
 }
 

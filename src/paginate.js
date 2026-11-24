@@ -1,18 +1,18 @@
 import fs from 'node:fs';
-import { readRangeWithOffsets, parseLines } from './jsonl.js';
+import { readRangeWithOffsets, parseLines, previousLineEnd } from './jsonl.js';
 import { eventsFor } from './wire.js';
 
 const FIRST_WINDOW = 256 * 1024;
 const MAX_WINDOW = 8 * 1024 * 1024;
 
-export function pageEvents(member, { before = null, limit = 50 } = {}) {
+export async function pageEvents(member, { before = null, limit = 50 } = {}) {
   const size = fs.statSync(member.file).size;
   const end = before === null ? size : Math.min(before, size);
 
   let win = FIRST_WINDOW;
   for (;;) {
     const start = Math.max(0, end - win);
-    const { entries, hitStart } = readRangeWithOffsets(member.file, start, end);
+    const { entries, hitStart, endOffset } = readRangeWithOffsets(member.file, start, end, { completeOnly: true });
 
     // 逐行归一化，保留每个事件对应的行偏移，游标才能精确。
     // 归一化函数对单行数组是纯函数：Claude 的 tool_call 与 tool_result 分属不同记录行，
@@ -36,7 +36,10 @@ export function pageEvents(member, { before = null, limit = 50 } = {}) {
       // 读到了文件头、而且这一页从第一条就开始了：前面没有了。原来只看「够不够一页」，
       // 恰好剩一整页时还给一个游标，客户端会多翻一次、拿回一页空的
       const nextBefore = hitStart && from === 0 ? null : (slice[0]?.offset ?? start);
-      return { events: slice.map((x) => x.ev), nextBefore };
+      return {
+        events: slice.map((x) => x.ev), nextBefore,
+        endOffset: endOffset ?? (hitStart ? 0 : await previousLineEnd(member.file, start)),
+      };
     }
     win = Math.min(win * 2, MAX_WINDOW);
   }

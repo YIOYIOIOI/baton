@@ -1,9 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import { setTimeout as delay } from 'node:timers/promises';
 import path from 'node:path';
-import { streamSession, listSessions } from '../src/http/handlers/sessions.js';
+import { streamSession, listSessions, sessionState } from '../src/http/handlers/sessions.js';
 import { createRepo } from '../src/repo.js';
-import { startTurn, endTurn } from '../src/runtime/turns.js';
+import { startTurn, updateTurnControl, endTurn } from '../src/runtime/turns.js';
 import { listenerCount } from '../src/runtime/bus.js';
 import { enqueue, takeNext } from '../src/runtime/queue.js';
 import { tmpDir, writeJsonl } from './helpers.js';
@@ -72,6 +74,39 @@ test('轮次开始与结束都通过 SSE 送达（Claude 的 transcript 给不�
   res.fire('close');
 });
 
+test('恢复和去重资料只保存在本机，状态与 SSE 仍提供正常停止信息', () => {
+  const { repo, key } = boot();
+  const res = fakeRes();
+  streamSession(repo, key, res);
+  startTurn({ key, turnId: 'private', agent: 'claude', principalId: 'owner', request: { id: 'test', signature: 'digest' } });
+  updateTurnControl(key, 'private', { ownerId: 'instance', ownerPid: 123, childPid: 456, childStarted: 'test:birth', childGroup: 456, principalGeneration: 'g',
+    monitor: { baselineStep: 7 }, canStop: false });
+  const snapshot = sessionState({ repo, key, live: () => new Map() }).body.latestTurn;
+  for (const value of [snapshot, ...res.events().map((e) => e.data)]) {
+    for (const field of ['ownerId', 'ownerPid', 'childPid', 'childStarted', 'childGroup', 'monitor', 'request', 'principalId', 'principalGeneration']) {
+      assert.equal(field in value, false, field);
+    }
+  }
+  assert.equal(snapshot.canStop, false);
+  endTurn({ key, turnId: 'private', status: 'ok', eventCount: 1 });
+  res.fire('close');
+});
+
+test('超过回放上限的未完成尾行不会触发反复补页，完成后继续同一条流', async (t) => {
+  const { repo, key } = boot();
+  const file = repo.getSession(key).file;
+  const from = fs.statSync(file).size;
+  fs.appendFileSync(file, Buffer.alloc(5 * 1024 * 1024, 0x20));
+  const res = fakeRes();
+  streamSession(repo, key, res, { resume: { query: String(from) } });
+  t.after(() => res.fire('close'));
+  await delay(150);
+  assert.ok(!res.events().some((e) => e.type === 'gap'));
+  fs.appendFileSync(file, JSON.stringify({ type: 'user', uuid: 'tail', message: { role: 'user', content: '完整回复' } }) + '\n');
+  for (let i = 0; i < 30 && !res.events().some((e) => e.type === 'events'); i++) await delay(100);
+  assert.ok(res.events().some((e) => e.data.events?.some((item) => item.text === '完整回复')));
+});
+
 test('终态不会被重复播送——否则停止后秒表会跳一下', () => {
   const { repo, key } = boot();
   const res = fakeRes();
@@ -86,6 +121,29 @@ test('终态不会被重复播送——否则停止后秒表会跳一下', () =>
   assert.equal(ends.length, 1, '一轮只能有一个 turn_end');
   assert.equal(ends[0].data.status, 'aborted', '「已停止」不得被覆盖成「正常完成」');
   res.fire('close');
+});
+
+test('停止请求通过 SSE 和重连快照可见，确认退出之前心跳仍为运行中', (t) => {
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  const { repo, key } = boot();
+  const live = fakeRes();
+  streamSession(repo, key, live);
+  startTurn({ key, turnId: 'waiting-for-close', agent: 'claude' });
+  updateTurnControl(key, 'waiting-for-close', { stopReason: '用户停止' });
+  const frames = live.events();
+  assert.deepEqual(frames.map((frame) => frame.type), ['turn_start', 'turn_control']);
+  assert.equal(frames[1].data.status, 'running');
+  live.fire('close');
+
+  const reconnected = fakeRes();
+  streamSession(repo, key, reconnected);
+  assert.equal(reconnected.events()[0].data.stopReason, '用户停止');
+  t.mock.timers.tick(15_000);
+  assert.equal(reconnected.events().at(-1).data.running, true);
+  assert.equal(reconnected.events().at(-1).data.stopping, true);
+  endTurn({ key, turnId: 'waiting-for-close', status: 'failed' });
+  assert.equal(reconnected.events().at(-1).data.status, 'aborted');
+  reconnected.fire('close');
 });
 
 test('建流即补一帧当前轮次——手机重连后不能等到下次状态变化才知道在跑什么', () => {

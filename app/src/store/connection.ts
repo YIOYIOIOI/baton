@@ -1,159 +1,195 @@
 import { create } from 'zustand';
+import { Platform } from 'react-native';
 import { fetch as expoFetch } from 'expo/fetch';
-import { createClient, type Client } from '../api/client';
+import { BatonError, createClient, type Client } from '../api/client';
 import { HEARTBEAT_MS, STALE_AFTER_MS } from '../api/classify';
 import type { LinkAxis } from '../api/types';
-import { clearToken, loadCredentials, normalizeBaseUrl, saveBaseUrl, saveToken } from './credentials';
+import {
+  clearPendingUnpair, clearToken, loadCredentials, normalizeBaseUrl,
+  saveNativeCredential, savePendingUnpair, type NativeCredential,
+} from './credentials';
+import { draftScope, getBrowserLock, lockBrowser, pairBrowser, retryBrowserUnpair } from './browserSession';
+import { setFileIdentity } from './files';
+import { resetDraftIdentity, selectDraftIdentity } from './drafts';
+import { usePermission } from './permission';
 
-/**
- * 网页端当前页面的来源；原生端没有这个概念，返回 null。
- *
- * 有它就意味着「这个页面是 Baton 自己发的」——地址已经确定，配对页不该再问一遍。
- * 原生端拿不到它，所以那边必须让用户输一次地址：app 不知道要连哪台电脑。
- */
 export function pageOrigin(): string | null {
-  const o = (globalThis as { location?: { origin?: string } }).location?.origin;
-  return o && /^https?:/.test(o) ? o : null;
+  const origin = globalThis.location?.origin;
+  return origin && /^https?:/.test(origin) ? origin : null;
 }
 
-/**
- * 连接与凭据。
- *
- * `lastHeardAt` 是整个界面诚实性的锚：秒表、活动块、「在跑」这些都由它决定
- * 可不可信。任何一次收到服务器的字节（包括注释心跳）都要刷新它——
- * **不是**收到有内容的事件才刷新，否则一个安静但活着的轮次会被误判成断线。
- */
-
 type State = {
-  ready: boolean;          // 是否已从 Keychain 读回凭据
+  ready: boolean;
   baseUrl: string | null;
   token: string | null;
+  locked: boolean;
+  pendingUnpair: boolean;
+  unpairStorageError: boolean;
   link: LinkAxis;
   lastHeardAt: number;
   client: Client | null;
-
+  principalAccess: { scope: string; allowSend: boolean } | null;
   boot: () => Promise<void>;
   pair: (baseUrl: string, code: string) => Promise<void>;
   unpair: () => Promise<void>;
+  retryUnpair: () => Promise<boolean>;
   heard: () => void;
   setLink: (l: LinkAxis) => void;
   probe: () => Promise<boolean>;
 };
 
-function build(baseUrl: string | null, token: string | null, set: (p: Partial<State>) => void): Client | null {
-  if (!baseUrl) return null;
-  return createClient({
-    baseUrl,
-    token,
-    onHeard: () => set({ lastHeardAt: Date.now() }),
-    onLink: (link) => set({ link }),
+let revision = 0;
+let pending: NativeCredential | null = null;
+let nativeRetry: Promise<boolean> | null = null;
+let prepared: Promise<unknown> = Promise.resolve();
+const web = () => Platform.OS === 'web';
+
+function build(baseUrl: string, token: string | null, set: (p: Partial<State>) => void): Client {
+  const current = revision;
+  const isActive = () => current === revision && (!web() || !getBrowserLock());
+  const clearAccess = () => {
+    set({ principalAccess: null });
+    setFileIdentity(null);
+    void resetDraftIdentity();
+  };
+  const client = createClient({
+    baseUrl, token,
+    isActive,
+    onHealth: (health) => {
+      if (!isActive()) return;
+      const { principal, allowSend } = health;
+      if (!principal?.id) { clearAccess(); return; }
+      const scope = draftScope(baseUrl, principal.id, principal.generation);
+      set({ principalAccess: { scope, allowSend: allowSend === true } });
+      setFileIdentity(scope);
+      void selectDraftIdentity(baseUrl, principal.id, principal.generation);
+      usePermission.getState().fromHealth(health);
+    },
+    onHeard: () => { if (revision === current) set({ lastHeardAt: Date.now() }); },
+    onLink: (link) => { if (revision === current) set({ link }); },
   });
+  // Boot, foreground, the session stream and manual refresh can all wake together.
+  let checking: ReturnType<Client['health']> | null = null;
+  return {
+    ...client,
+    health() {
+      if (!checking) {
+        checking = client.health().catch((error) => {
+          if (isActive() && error instanceof BatonError && error.status === 401) clearAccess();
+          throw error;
+        }).finally(() => { checking = null; });
+      }
+      return checking;
+    },
+  };
+}
+
+export function canSendFor(client: Client, scope: string | null): boolean {
+  const current = useConnection.getState();
+  return current.client === client && !current.locked && (!web() || !getBrowserLock())
+    && current.principalAccess?.allowSend === true && current.principalAccess.scope === scope;
 }
 
 export const useConnection = create<State>((set, get) => ({
-  ready: false,
-  baseUrl: null,
-  token: null,
-  link: 'ok',
-  lastHeardAt: 0,
-  client: null,
+  ready: false, baseUrl: null, token: null, locked: false, pendingUnpair: false, unpairStorageError: false,
+  link: 'ok', lastHeardAt: 0, client: null, principalAccess: null,
 
   async boot() {
-    // ready 必须无论如何都置 true。任何一处抛错就让它停在 false 的话，
-    // 界面会永远转圈——那正是 Baton 立项要消灭的那种失败，不能自己先犯一遍。
-    // 读不到凭据的后果只是「需要重新配对」，是可恢复的；永远转圈不是。
+    const current = ++revision;
+    set({ principalAccess: null });
+    setFileIdentity(null);
     try {
       const saved = await loadCredentials();
-      // 网页版跑在 Baton 自己发的页面上，地址就是当前 origin——
-      // 还要用户手打一遍是没道理的。原生端没有 origin，只能靠存的那个。
-      const baseUrl = saved.baseUrl ?? pageOrigin();
-      set({ baseUrl, token: saved.token, client: build(baseUrl, saved.token, set) });
+      const baseUrl = web() ? pageOrigin() : saved.baseUrl;
+      const lock = web() ? getBrowserLock() : null;
+      const storedPending = saved.pending ?? null;
+      if (current !== revision) return;
+      pending = storedPending;
+      const locked = !!(lock || pending || (!web() && !saved.token));
+      if (locked) void resetDraftIdentity();
+      const client = baseUrl && !locked ? build(baseUrl, saved.token, set) : null;
+      set({ ready: true, baseUrl, locked, token: locked ? null : saved.token, unpairStorageError: !!saved.storageError,
+        client, pendingUnpair: lock === 'pending' || !!pending });
+      if (get().pendingUnpair) void get().retryUnpair();
+      else if (client) void client.health().catch(() => {});
     } catch {
-      const baseUrl = pageOrigin();
-      set({ baseUrl, token: null, client: build(baseUrl, null, set) });
-    } finally {
-      set({ ready: true });
+      if (current === revision) set({ ready: true, locked: true, token: null, client: null });
     }
   },
 
-  /**
-   * 「配没配对」以**服务端认不认**为准，不以本地存不存着一个字符串为准。
-   *
-   * 两者会不一致，而且是常态：网页端同源时浏览器会自动带上 cookie，
-   * 那条 cookie 可能是更早版本的客户端留下的——服务端认，本地却没有 token。
-   * 只看本地存储就会把一个其实已经配好的人扔回配对页。
-   *
-   * 反过来也成立：本地存着一个已经失效的 token，只看存储就会让他一直撞 401。
-   */
   async probe() {
-    const c = get().client;
-    if (!c) return false;
-    try {
-      await c.health();
-      return true;
-    } catch {
-      return false;
-    }
+    const client = get().client;
+    if (!client || get().locked) return false;
+    try { await client.health(); return !get().locked && get().client === client; }
+    catch { return false; }
   },
 
-  /**
-   * 配对。
-   *
-   * Baton 的配对码换的是一个 **cookie**，但 RN 里我们要的是 Bearer 凭据——
-   * 两者在后端是同一个抽象（`authorize` 同时认 cookie 与 Bearer），所以这里
-   * 走 cookie 拿不到可存的东西。改为：配对成功后把**服务端下发的 cookie 值**
-   * 当作 Bearer 凭据存起来。
-   *
-   * 注意 cookie 值是由 token 派生的 HMAC，不是 token 本身——存它比存 token
-   * 更好：泄漏了只能访问 HTTP 接口，拿不到原始 token。
-   */
-  async pair(rawUrl: string, code: string) {
+  async pair(rawUrl, code) {
     const baseUrl = normalizeBaseUrl(rawUrl);
-    if (!baseUrl) throw new Error('地址看不懂。形如 https://baton.example.com');
-
-    const probe = createClient({
-      baseUrl,
-      token: null,
-      onHeard: () => set({ lastHeardAt: Date.now() }),
-      onLink: (link) => set({ link }),
-    });
-    const value = await probe.pairForBearer(code);
-
-    await saveBaseUrl(baseUrl);
-    await saveToken(value);
-    set({ baseUrl, token: value, client: build(baseUrl, value, set) });
+    if (!baseUrl || (web() && baseUrl !== pageOrigin())) throw new Error('invalid_baton_origin');
+    if (get().pendingUnpair || (web() && getBrowserLock() === 'pending')) throw new Error('unpair_pending');
+    const probe = createClient({ baseUrl, token: null });
+    let token: string | null = null;
+    if (web()) {
+      await pairBrowser(() => probe.pairWithCookie(code));
+    } else {
+      token = await probe.pairForBearer(code);
+      await saveNativeCredential(baseUrl, token);
+    }
+    ++revision;
+    setFileIdentity(null);
+    void resetDraftIdentity();
+    const client = build(baseUrl, token, set);
+    set({ baseUrl, token, client, principalAccess: null, locked: false, pendingUnpair: false, unpairStorageError: false, ready: true });
+    void client.health().catch(() => {});
   },
 
-  /**
-   * 解除配对。**服务端那一步不能省。**
-   *
-   * 上一版只有 `clearToken()`——清的是本地存储。但浏览器里真正让服务端认人的是
-   * HttpOnly cookie，JS 碰不到它，服务端也照收不误。于是「解除配对」点完看着像
-   * 退出了，一回到首页又自动登回去。owner 实测：解除后点「配对」，
-   * 不输码直接就恢复了。**那等于这个按钮在撒谎。**
-   *
-   * 所以先请服务端把 cookie 作废，再清本地。顺序不能反：先清本地的话，
-   * 万一网络请求失败，本地已经没了凭据、cookie 却还在，用户就卡在
-   * 「看着没配对、其实还连着」里出不来。
-   */
   async unpair() {
     const { baseUrl, token } = get();
-    if (baseUrl) {
-      try {
-        // 原生端的凭据是 bearer（存在 Keychain，不是 cookie）。带上它，服务端才能把这张
-        // 设备凭据写进吊销表——只删本地那份的话，值本身还活着，被拷走就还能用。
-        await expoFetch(`${baseUrl}/api/unpair`, {
-          method: 'POST',
-          credentials: 'include',
-          headers: token ? { Authorization: `Bearer ${token}` } : undefined,
-        });
-      } catch {
-        // 网络失败也要继续清本地：至少这台设备上不再留凭据。
-        // cookie 可能还在，下次联网时用户再点一次就清掉了。
-      }
+    ++revision;
+    setFileIdentity(null);
+    set({ locked: true, token: null, client: null, principalAccess: null, pendingUnpair: true });
+    const clearDrafts = resetDraftIdentity(true);
+    if (web()) {
+      await lockBrowser();
+    } else if (baseUrl && token) {
+      pending = { baseUrl, token };
+      prepared = savePendingUnpair(pending).catch(() => { set({ unpairStorageError: true }); });
+      await prepared;
     }
-    await clearToken();
-    set({ token: null, client: build(baseUrl, null, set) });
+    await clearDrafts;
+    void get().retryUnpair();
+  },
+
+  async retryUnpair() {
+    if (web()) {
+      const ok = await retryBrowserUnpair();
+      set({ pendingUnpair: getBrowserLock() === 'pending' });
+      return ok;
+    }
+    if (nativeRetry) return nativeRetry;
+    const target = pending;
+    if (!target) { set({ pendingUnpair: false }); return true; }
+    nativeRetry = (async () => {
+      try {
+        await prepared;
+        if (get().unpairStorageError) {
+          try { await savePendingUnpair(target); set({ unpairStorageError: false }); }
+          catch { /* Keep retrying the original server using the in-memory credential. */ }
+        }
+        const response = await expoFetch(`${target.baseUrl}/api/unpair`, {
+          method: 'POST', credentials: 'omit', redirect: 'error',
+          headers: { Authorization: `Bearer ${target.token}` },
+        });
+        if (!response.ok || response.headers.get('x-baton') !== '1' || (await response.json())?.ok !== true) return false;
+        await clearToken();
+        await clearPendingUnpair();
+        pending = null;
+        set({ pendingUnpair: false, unpairStorageError: false });
+        return true;
+      } catch { return false; }
+    })().finally(() => { nativeRetry = null; });
+    return nativeRetry;
   },
 
   heard: () => set({ lastHeardAt: Date.now() }),

@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useTheme, type Theme } from '@/theme';
+import { useLocale } from '@/i18n';
 import {
   IconClock, IconClose, IconCopy, IconDots, IconExpand, IconFile, IconGlobe, IconImage,
   IconRight, IconSearch, IconTerm,
@@ -107,39 +108,42 @@ export function MsgUser({ text, fromPhone, sessionKey }: {
  * 不该有任何跳动。
  */
 export function PendingMsg({
-  text, failed, error, onRetry, onDrop,
+  text, failed, error, status, onRetry, onDrop,
 }: {
   text: string;
   failed?: boolean;
+  status?: string;
   error?: string | null;
-  onRetry: () => void;
+  onRetry?: () => void;
   onDrop: () => void;
 }) {
   const t = useTheme();
   const s = st(t);
   // 和真气泡同一套处理：给 agent 看的那段路径清单不显示给人
-  const { body } = splitAttachments(text);
+  const { isEn } = useLocale();
+  const { body, files } = splitAttachments(text);
   return (
     <>
       <View style={s.msgUser}>
         {/* 没落定之前压一点透明度：它和真消息的区别只有"还没数"，不该换个样子 */}
         <View style={[s.bubble, !failed && { opacity: 0.55 }]}>
           <Text style={s.bubbleTx}>{body || text}</Text>
+          {body && files.map((f) => <Text key={f.relative} style={s.bubbleTx}>{f.label}</Text>)}
         </View>
       </View>
       <View style={s.pendRow}>
         {failed ? (
           <>
-            <Text style={s.pendFail} numberOfLines={2}>{error || '没发出去'}</Text>
-            <Pressable onPress={onRetry} hitSlop={8} accessibilityRole="button">
-              <Text style={s.pendAct}>重试</Text>
-            </Pressable>
+            <Text style={s.pendFail}>{error || (isEn ? 'Delivery failed' : '没发出去')}</Text>
+            {onRetry && <Pressable onPress={onRetry} hitSlop={8} accessibilityRole="button">
+              <Text style={s.pendAct}>{isEn ? 'Retry' : '重试'}</Text>
+            </Pressable>}
             <Pressable onPress={onDrop} hitSlop={8} accessibilityRole="button">
-              <Text style={s.pendDrop}>不发了</Text>
+              <Text style={s.pendDrop}>{isEn ? 'Dismiss' : '移除'}</Text>
             </Pressable>
           </>
         ) : (
-          <Text style={s.pendTx}>发送中…</Text>
+          <Text style={s.pendTx} accessibilityLiveRegion="polite">{status ?? '发送中…'}</Text>
         )}
       </View>
     </>
@@ -463,6 +467,7 @@ export function TurnEnd({
   onDismiss?: () => void;
 }) {
   const t = useTheme();
+  const { trNew } = useLocale();
   const s = st(t);
   if (status === 'ok' || status === 'running') return null;
 
@@ -473,6 +478,7 @@ export function TurnEnd({
     aborted: { bg: t.c.bgSecondary, title: '已停止', fix: '改动已保留。' },
     // 「不算完成」这四个字不能省：异常结束最容易被当成做完了
     anomaly: { bg: t.c.bgWarning, title: '异常结束', fix: '不算完成，重发一次。' },
+    unconfirmed: { bg: t.c.bgWarning, title: trNew('session.desktopUnconfirmed'), fix: trNew('session.desktopUnconfirmedHelp') },
     // 不是失败：消息排进了正开着这个会话的 Codex App，App 跑完手上那一轮就接着做
     handoff: { bg: t.c.bgSecondary, title: '已交给 Codex App', fix: '不用重发，回复会出现在这里。' },
   }[status] ?? { bg: t.c.bgSecondary, title: '已结束', fix: '' };
@@ -480,7 +486,7 @@ export function TurnEnd({
   return (
     <View style={[s.end, { backgroundColor: cfg.bg }]}>
       <Text style={s.endTitle}>{cfg.title}</Text>
-      {error ? <Text style={s.endWhy} selectable>{error}</Text> : null}
+      {error && status !== 'unconfirmed' ? <Text style={s.endWhy} selectable>{error}</Text> : null}
       <Text style={s.endFix}>{cfg.fix}</Text>
       {onDismiss ? (
         <Pressable

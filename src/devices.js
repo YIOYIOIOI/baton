@@ -1,5 +1,5 @@
 import fs from 'node:fs';
-import path from 'node:path';
+import { withJsonWriteLock, writeJsonAtomic } from './json-store.js';
 
 const TOUCH_INTERVAL_MS = 60_000;
 
@@ -37,65 +37,54 @@ export function parseDeviceAgent(uaHeader) {
   };
 }
 
-function createDeviceStore(persist) {
-  let state = { devices: {} };
-  let dirty = false;
-
-  const ensureLoaded = () => {
-    const loaded = persist.load(state);
-    if (loaded) state = loaded;
-  };
-
+function createDeviceStore(read, update) {
   return {
-    register({ deviceId, principalId, userAgent = '', now = Date.now() }) {
+    register({ deviceId, principalId, generation = null, userAgent = '', now = Date.now() }) {
       if (!deviceId) return null;
-      ensureLoaded();
       const { label, platform } = parseDeviceAgent(userAgent);
       const entry = {
         id: deviceId,
         principalId: String(principalId),
+        ...(generation ? { generation } : {}),
         label,
         platform,
         createdAt: now,
         lastSeenAt: now,
       };
-      state.devices[deviceId] = entry;
-      persist.save(state);
-      dirty = false;
+      update((devices) => { devices[deviceId] = entry; return true; });
       return entry;
     },
 
     touch(deviceId, now = Date.now()) {
       if (!deviceId) return false;
-      ensureLoaded();
-      const entry = state.devices[deviceId];
-      if (!entry) return false;
-      if (now - Number(entry.lastSeenAt || 0) < TOUCH_INTERVAL_MS && !dirty) return false;
-      entry.lastSeenAt = now;
-      persist.save(state);
-      dirty = false;
-      return true;
+      const due = (entry) => entry && now - entry.lastSeenAt >= TOUCH_INTERVAL_MS;
+      if (!due(read()[deviceId])) return false;
+      try {
+        return update((devices) => {
+          if (!due(devices[deviceId])) return false;
+          devices[deviceId] = { ...devices[deviceId], lastSeenAt: now };
+          return true;
+        });
+      } catch { return false; } // lastSeen bookkeeping must not invalidate a signed credential.
     },
 
     get(deviceId) {
-      ensureLoaded();
-      return Object.hasOwn(state.devices, deviceId) ? state.devices[deviceId] : null;
+      const devices = read();
+      return Object.hasOwn(devices, deviceId) ? devices[deviceId] : null;
     },
 
     list({ principalId = null } = {}) {
-      ensureLoaded();
-      const all = Object.values(state.devices);
+      const all = Object.values(read());
       const filtered = principalId ? all.filter((d) => d.principalId === principalId) : all;
       return filtered.sort((a, b) => Number(b.lastSeenAt || 0) - Number(a.lastSeenAt || 0));
     },
 
     remove(deviceId) {
-      ensureLoaded();
-      if (!Object.hasOwn(state.devices, deviceId)) return false;
-      delete state.devices[deviceId];
-      persist.save(state);
-      dirty = false;
-      return true;
+      return update((devices) => {
+        if (!Object.hasOwn(devices, deviceId)) return false;
+        delete devices[deviceId];
+        return true;
+      });
     },
   };
 }
@@ -105,43 +94,45 @@ function createDeviceStore(persist) {
  * @param {string} file
  */
 export function fileDevices(file) {
-  let seen = -1;
-  return createDeviceStore({
-    load() {
-      let mtime;
-      try {
-        mtime = fs.statSync(file).mtimeMs;
-      } catch {
-        if (seen !== 0) {
-          seen = 0;
-          return { devices: {} };
-        }
-        return null;
+  let snapshot = {};
+  let previousText = null;
+  let sawFile = false;
+  let reported = false;
+  function read(strict = false) {
+    try {
+      const text = fs.readFileSync(file, 'utf8');
+      sawFile = true;
+      if (text !== previousText) {
+        const devices = JSON.parse(text)?.devices;
+        if (!devices || typeof devices !== 'object' || Array.isArray(devices)
+          || Object.entries(devices).some(([id, row]) => row?.id !== id || typeof row.principalId !== 'string'
+            || typeof row.label !== 'string' || typeof row.platform !== 'string'
+            || (row.generation !== undefined && (typeof row.generation !== 'string' || !row.generation))
+            || !Number.isFinite(row.lastSeenAt) || !Number.isFinite(row.createdAt))) throw new Error('设备清单格式无效');
+        snapshot = devices;
+        previousText = text;
       }
-      if (mtime === seen) return null;
-      seen = mtime;
-      try {
-        const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
-        const devices = raw && typeof raw.devices === 'object' && raw.devices ? raw.devices : {};
-        return { devices };
-      } catch {
-        return { devices: {} };
-      }
-    },
-    save(state) {
-      fs.mkdirSync(path.dirname(file), { recursive: true });
-      const tmp = `${file}.${process.pid}.tmp`;
-      fs.writeFileSync(tmp, JSON.stringify(state, null, 2), { mode: 0o600 });
-      fs.renameSync(tmp, file);
-      seen = -1;
-    },
-  });
+      reported = false;
+    } catch (err) {
+      if (err.code === 'ENOENT' && !sawFile) return snapshot;
+      if (!reported) console.error(`[baton] ${file} 无法验证，请恢复设备清单。`);
+      reported = true;
+      if (strict) throw new Error('无法安全更新设备清单，请先恢复文件。', { cause: err });
+    }
+    return snapshot;
+  }
+  return createDeviceStore(read, (change) => withJsonWriteLock(file, () => {
+    const next = { ...read(true) };
+    if (!change(next)) return false;
+    previousText = writeJsonAtomic(file, { devices: next });
+    snapshot = next;
+    sawFile = true;
+    return true;
+  }));
 }
 
 /** In-memory device registry for isolated tests and ephemeral runs. */
 export function memoryDevices() {
-  return createDeviceStore({
-    load: () => null,
-    save: () => {},
-  });
+  const devices = {};
+  return createDeviceStore(() => devices, (change) => change(devices));
 }
