@@ -3,6 +3,8 @@
 // 2026-10-01 从 src/http/api.js 拆出来（那个文件当时 1661 行、40 个导出）。
 
 import crypto from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
 import { buildClaudeArgs, buildCodexArgs } from '../../agent/args.js';
 import { getModel, getEffort, getDefaultEffort, effectiveEffort } from '../../runtime/prefs.js';
 import { getMode } from '../../permission.js';
@@ -75,6 +77,16 @@ function receiptProblem(error) {
  * @property {() => Map<string, string>} [live] 电脑上哪些会话在跑（runtime/live.js）
  */
 
+function sessionDirectoryAvailable(cwd) {
+  if (typeof cwd !== 'string' || !path.isAbsolute(cwd)) return false;
+  if (process.platform === 'win32' && path.parse(cwd).root.length === 1) return false;
+  try {
+    return fs.statSync(cwd).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
 /** @param {RunnerOptions} opts */
 export async function defaultRunner({
   member, message, fork, args, model, effort: initialEffort, isNew = false, onStart, onLine, turnId, config, mayClaimCreation,
@@ -83,6 +95,13 @@ export async function defaultRunner({
   // App 开着这个会话就由 App 自己续（见 continueGoal）
   handoff = true,
 }) {
+  if (!sessionDirectoryAvailable(member.cwd)) {
+    const error = '无法确认原会话的工作目录，未启动本轮。请确认原目录仍然存在，或在正确目录新建会话。';
+    return {
+      code: 1, lines: [], stderr: error,
+      summary: { status: 'failed', sessionId: member.providerId, tokens: null, eventCount: 0, error },
+    };
+  }
   const permissionMode = getMode(member.agent);
   // 档位与思考强度均在起进程这一刻读：排队很久才跑的那一轮要按最新设置走
   const effort = initialEffort !== undefined ? initialEffort : effectiveEffort({
@@ -130,7 +149,7 @@ export async function defaultRunner({
       }
       : onLine;
     const r = await run({
-      command, args: finalArgs, cwd: member.cwd ?? process.cwd(), message, onStart, onLine: watch,
+      command, args: finalArgs, cwd: member.cwd, message, onStart, onLine: watch,
     });
     const summary = summarizeTurn(member.agent, r.lines, r.stderr);
     /*

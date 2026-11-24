@@ -17,6 +17,7 @@ import { createHeadCache, createTailCache } from './cache.js';
 
 /** 单个会话查找复用标题源的时长。见 createRepo 里 titleSources 那段。 */
 const SOURCES_TTL_MS = 2000;
+const CLAUDE_HEAD_LIMIT = 1024 * 1024;
 
 /**
  * @param {{
@@ -42,16 +43,22 @@ export function createRepo(opts = {}) {
     const hit = heads.get(ref.file, ref.size);
     if (hit) return hit;
     counters.headReads += 1;
-    const records = parseLines(readHead(ref.file).lines);
+    const head = readHead(ref.file);
+    let records = parseLines(head.lines);
     let value;
     if (ref.agent === 'claude') {
+      if (head.truncated && !records.some(record => record?.cwd)) {
+        records = parseLines(readHead(ref.file, CLAUDE_HEAD_LIMIT).lines);
+      }
       value = { ...claudeHead(records, ref.providerId), threadSource: null, firstUserText: claudeFirstUserText(records) };
     } else if (ref.agent === 'antigravity') {
       value = { ...antigravityHead(records), threadSource: null, firstUserText: antigravityFirstUserText(records) };
     } else {
       value = { ...codexHead(records), parentId: null, firstUserText: codexFirstUserText(ref.file) };
     }
-    heads.set(ref.file, ref.size, value);
+    const complete = ref.agent === 'antigravity' || Boolean(value.cwd)
+      || (ref.agent === 'claude' ? ref.size >= CLAUDE_HEAD_LIMIT : head.truncated);
+    heads.set(ref.file, ref.size, value, complete);
     return value;
   }
 
